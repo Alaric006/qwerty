@@ -38,6 +38,8 @@ README:
    * [`docs/state-prep.md`](docs/state-prep.md): Describes the arbitrary state
      preparation technique by Shende et al. that we use to synthesize circuits for
      superposition literals
+ * Addition Documentation:
+   * [`docs/wsl-tips.md`](docs/wsl-tips.md): Recommendations for working with WSL on Windows. 
 
 The rest of this README is dedicated to installation, basic testing, and
 troubleshooting.
