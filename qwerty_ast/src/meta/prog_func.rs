@@ -53,7 +53,7 @@ impl MetaFunctionDef<qpu::MetaStmt> {
     /// Extract a plain `@qpu` `FunctionDef` from this MetaQwerty `@qpu`
     /// `MetaFunctionDef` or return an error if e.g. contained dimension variable
     /// expressions are not fully folded yet.
-    pub fn extract(&self) -> Result<ast::FunctionDef<ast::qpu::Expr>, LowerError> {
+    pub fn extract(self) -> Result<ast::FunctionDef<ast::qpu::Expr>, LowerError> {
         let MetaFunctionDef {
             name,
             args,
@@ -90,7 +90,7 @@ impl MetaFunctionDef<qpu::MetaStmt> {
             .and_then(|ret_type| ret_type.extract())?;
 
         let ast_body = body
-            .iter()
+            .into_iter()
             .map(|stmt| stmt.extract())
             .collect::<Result<Vec<ast::Stmt<ast::qpu::Expr>>, LowerError>>()?;
 
@@ -99,7 +99,7 @@ impl MetaFunctionDef<qpu::MetaStmt> {
             args: ast_args,
             ret_type: ast_ret_type,
             body: ast_body,
-            is_rev: *is_rev,
+            is_rev,
             dbg: dbg.clone(),
         })
     }
@@ -110,7 +110,7 @@ impl MetaFunctionDef<classical::MetaStmt> {
     /// Extract a plain `@classical` `FunctionDef` from this MetaQwerty `@classical`
     /// `MetaFunctionDef` or return an error if e.g. contained dimension variable
     /// expressions are not fully folded yet.
-    pub fn extract(&self) -> Result<ast::FunctionDef<ast::classical::Expr>, LowerError> {
+    pub fn extract(self) -> Result<ast::FunctionDef<ast::classical::Expr>, LowerError> {
         let MetaFunctionDef {
             name,
             args,
@@ -147,17 +147,17 @@ impl MetaFunctionDef<classical::MetaStmt> {
             .and_then(|ret_type| ret_type.extract())?;
 
         let ast_body = body
-            .iter()
+            .into_iter()
             .map(|stmt| stmt.extract())
             .collect::<Result<Vec<ast::Stmt<ast::classical::Expr>>, LowerError>>()?;
 
         Ok(ast::FunctionDef {
-            name: name.to_string(),
+            name,
             args: ast_args,
             ret_type: ast_ret_type,
             body: ast_body,
-            is_rev: *is_rev,
-            dbg: dbg.clone(),
+            is_rev,
+            dbg,
         })
     }
 }
@@ -203,7 +203,7 @@ impl MetaFunc {
     /// Extract a plain [`ast::Func`] from this MetaQwerty [`MetaFunc`] or
     /// return an error if e.g. contained dimension variable expressions are
     /// not fully folded yet.
-    pub fn extract(&self) -> Result<ast::Func, LowerError> {
+    pub fn extract(self) -> Result<ast::Func, LowerError> {
         Ok(match self {
             MetaFunc::Qpu(qpu_func) => ast::Func::Qpu(qpu_func.extract()?),
             MetaFunc::Classical(classical_func) => ast::Func::Classical(classical_func.extract()?),
@@ -223,17 +223,17 @@ pub struct MetaProgram {
 
 impl MetaProgram {
     /// Extract a plain Qwerty AST from a metaQwerty AST.
-    pub fn extract(&self) -> Result<ast::Program, LowerError> {
+    pub fn extract(self) -> Result<ast::Program, LowerError> {
         let MetaProgram { funcs, dbg } = self;
 
         let ast_funcs = funcs
-            .iter()
+            .into_iter()
             .map(MetaFunc::extract)
             .collect::<Result<Vec<ast::Func>, LowerError>>()?;
 
         Ok(ast::Program {
             funcs: ast_funcs,
-            dbg: dbg.clone(),
+            dbg,
         })
     }
 }

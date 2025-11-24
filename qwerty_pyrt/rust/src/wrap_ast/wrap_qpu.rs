@@ -481,7 +481,7 @@ impl QpuExpr {
         Self {
             expr: meta::qpu::MetaExpr::BasisMacro {
                 name,
-                arg: Box::new(arg.basis),
+                arg: arg.basis,
                 dbg: dbg.map(|dbg| dbg.dbg),
             },
         }
@@ -1042,6 +1042,7 @@ impl QpuStmt {
         plain_ty_env: &TypeEnv,
     ) -> PyResult<PlainQpuStmt> {
         self.stmt
+            .clone()
             .lower(&mut env.env, &plain_ty_env.env)
             .map(|ast_stmt| PlainQpuStmt { stmt: ast_stmt })
             .map_err(|err| get_err(py, ProgErrKind::Expand, err.kind.to_string(), err.dbg))

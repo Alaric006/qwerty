@@ -26,6 +26,13 @@ fi
 
 ok=1
 
+printf '\n=========> RUNNING AST MACRO TESTS\n\n'
+pushd "$repo_root/qwerty_ast_macros/" >/dev/null
+    cargo test
+    ret=$?
+    (( ok = ok && !ret ))
+popd >/dev/null
+
 printf '\n=========> RUNNING AST TESTS\n\n'
 pushd "$repo_root/qwerty_ast/" >/dev/null
     cargo test

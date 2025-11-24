@@ -167,7 +167,7 @@ impl From<TypeError> for CompileError {
 }
 
 pub fn compile_meta_ast(
-    prog: &MetaProgram,
+    prog: MetaProgram,
     func_name: &str,
     cfg: &CompileConfig,
 ) -> Result<Module<'static>, CompileError> {
@@ -228,7 +228,7 @@ pub fn meta_ast_to_qasm(
         target: Target::OpenQasm,
         dump: debug,
     };
-    let module = compile_meta_ast(prog, func_name, &cfg)?;
+    let module = compile_meta_ast(prog.clone(), func_name, &cfg)?;
     let sym_table = SymbolTable::new(module.as_operation()).ok_or_else(|| {
         CompileError::Message(
             "Every ModuleOp should have a symbol table".to_string(),

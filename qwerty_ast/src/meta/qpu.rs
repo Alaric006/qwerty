@@ -2,11 +2,25 @@ use crate::{
     ast::{self, Trivializable, qpu::EmbedKind},
     dbg::DebugLoc,
     error::{LowerError, LowerErrorKind},
-    meta::DimExpr,
+    meta::{DimExpr, DimVar, Progress, expand::MacroEnv},
 };
 use dashu::integer::{IBig, UBig};
+use qwerty_ast_macros::{gen_rebuild, rebuild, rewrite_match, rewrite_ty};
 use std::fmt;
 
+#[gen_rebuild {
+    substitute_dim_var(
+        more_copied_args(dim_var: &DimVar, new_dim_expr: &DimExpr),
+        recurse_attrs,
+    ),
+    expand(
+        rewrite(expand_rewriter),
+        progress(Progress),
+        more_copied_args(env: &MacroEnv),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+}]
 #[derive(Debug, Clone, PartialEq)]
 pub enum FloatExpr {
     /// A dimension variable expression used in a float expression. Example
@@ -68,16 +82,16 @@ pub enum FloatExpr {
 impl FloatExpr {
     /// Extract a constant double-precision float from this float expression or
     /// return an error if it is not fully folded yet.
-    pub fn extract(&self) -> Result<f64, LowerError> {
+    pub fn extract(self) -> Result<f64, LowerError> {
         match self {
-            FloatExpr::FloatConst { val, .. } => Ok(*val),
+            FloatExpr::FloatConst { val, .. } => Ok(val),
             FloatExpr::FloatDimExpr { dbg, .. }
             | FloatExpr::FloatSum { dbg, .. }
             | FloatExpr::FloatProd { dbg, .. }
             | FloatExpr::FloatDiv { dbg, .. }
             | FloatExpr::FloatNeg { dbg, .. } => Err(LowerError {
                 kind: LowerErrorKind::NotFullyFolded,
-                dbg: dbg.clone(),
+                dbg,
             }),
         }
     }
@@ -98,6 +112,32 @@ impl fmt::Display for FloatExpr {
     }
 }
 
+#[gen_rebuild {
+    substitute_dim_var(
+        more_copied_args(dim_var: &DimVar, new_dim_expr: &DimExpr),
+        recurse_attrs,
+    ),
+    substitute_vector_alias(
+        rewrite(substitute_vector_alias_rewriter),
+        more_copied_args(vector_alias: &str, new_vector: &MetaVector),
+    ),
+    expand(
+        rewrite(expand_rewriter),
+        progress(Progress),
+        more_copied_args(env: &MacroEnv),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+    extract(
+        rewrite(extract_rewriter),
+        rewrite_to(
+            MetaVector => ast::qpu::Vector,
+            FloatExpr => f64,
+        ),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+}]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetaVector {
     /// A name for a vector. Currently used only in macro definitions.
@@ -120,7 +160,9 @@ pub enum MetaVector {
     /// 'p'**N
     /// ```
     VectorBroadcastTensor {
+        #[gen_rebuild::skip_recurse(extract)]
         val: Box<MetaVector>,
+        #[gen_rebuild::skip_recurse(extract)]
         factor: DimExpr,
         dbg: Option<DebugLoc>,
     },
@@ -206,48 +248,52 @@ impl MetaVector {
 
     /// Extracts a plain-AST `@qpu` Vector from this metaQwerty vector. Returns
     /// an error instead if metaQwerty constructs are still present.
-    pub fn extract(&self) -> Result<ast::qpu::Vector, LowerError> {
-        match self {
-            MetaVector::ZeroVector { dbg } => Ok(ast::qpu::Vector::ZeroVector { dbg: dbg.clone() }),
-            MetaVector::OneVector { dbg } => Ok(ast::qpu::Vector::OneVector { dbg: dbg.clone() }),
-            MetaVector::PadVector { dbg } => Ok(ast::qpu::Vector::PadVector { dbg: dbg.clone() }),
-            MetaVector::TargetVector { dbg } => {
-                Ok(ast::qpu::Vector::TargetVector { dbg: dbg.clone() })
-            }
-            MetaVector::VectorTilt { q, angle_deg, dbg } => q.extract().and_then(|ast_q| {
-                angle_deg
-                    .extract()
-                    .map(|angle_deg_double| ast::qpu::Vector::VectorTilt {
-                        q: Box::new(ast_q),
-                        angle_deg: angle_deg_double,
-                        dbg: dbg.clone(),
-                    })
-            }),
-            MetaVector::UniformVectorSuperpos { q1, q2, dbg } => q1.extract().and_then(|ast_q1| {
-                q2.extract()
-                    .map(|ast_q2| ast::qpu::Vector::UniformVectorSuperpos {
-                        q1: Box::new(ast_q1),
-                        q2: Box::new(ast_q2),
-                        dbg: dbg.clone(),
-                    })
-            }),
-            MetaVector::VectorBiTensor { left, right, dbg } => {
-                left.extract().and_then(|ast_left| {
-                    right
-                        .extract()
-                        .map(|ast_right| ast::qpu::Vector::VectorTensor {
-                            qs: vec![ast_left, ast_right],
-                            dbg: dbg.clone(),
-                        })
+    pub fn extract(self) -> Result<ast::qpu::Vector, LowerError> {
+        rebuild!(MetaVector, self, extract)
+    }
+
+    pub(crate) fn extract_rewriter(
+        rewritten: rewrite_ty!(MetaVector, extract),
+    ) -> Result<ast::qpu::Vector, LowerError> {
+        rewrite_match! {MetaVector, extract, rewritten,
+            ZeroVector { dbg } => Ok(ast::qpu::Vector::ZeroVector { dbg }),
+
+            OneVector { dbg } => Ok(ast::qpu::Vector::OneVector { dbg }),
+
+            PadVector { dbg } => Ok(ast::qpu::Vector::PadVector { dbg }),
+
+            TargetVector { dbg } => Ok(ast::qpu::Vector::TargetVector { dbg }),
+
+            VectorTilt { q, angle_deg, dbg } => {
+                Ok(ast::qpu::Vector::VectorTilt {
+                    q: Box::new(q),
+                    angle_deg,
+                    dbg,
                 })
             }
-            MetaVector::VectorUnit { dbg } => Ok(ast::qpu::Vector::VectorUnit { dbg: dbg.clone() }),
 
-            MetaVector::VectorAlias { dbg, .. }
-            | MetaVector::VectorSymbol { dbg, .. }
-            | MetaVector::VectorBroadcastTensor { dbg, .. } => Err(LowerError {
+            UniformVectorSuperpos { q1, q2, dbg } => {
+                Ok(ast::qpu::Vector::UniformVectorSuperpos {
+                    q1: Box::new(q1),
+                    q2: Box::new(q2),
+                    dbg,
+                })
+            }
+
+            VectorBiTensor { left, right, dbg } => {
+                Ok(ast::qpu::Vector::VectorTensor {
+                    qs: vec![left, right],
+                    dbg,
+                })
+            }
+
+            VectorUnit { dbg } => Ok(ast::qpu::Vector::VectorUnit { dbg }),
+
+            VectorAlias { dbg, .. }
+            | VectorSymbol { dbg, .. }
+            | VectorBroadcastTensor { dbg, .. } => Err(LowerError {
                 kind: LowerErrorKind::NotFullyFolded,
-                dbg: dbg.clone(),
+                dbg,
             }),
         }
     }
@@ -282,6 +328,37 @@ impl fmt::Display for MetaVector {
     }
 }
 
+#[gen_rebuild {
+    substitute_dim_var(
+        more_copied_args(dim_var: &DimVar, new_dim_expr: &DimExpr),
+        recurse_attrs,
+    ),
+    substitute_vector_alias(
+        more_copied_args(vector_alias: &str, new_vector: &MetaVector),
+        recurse_attrs,
+    ),
+    substitute_basis_alias(
+        more_copied_args(basis_alias: &str, new_basis: &MetaBasis),
+        recurse_attrs,
+    ),
+    expand(
+        rewrite(expand_rewriter),
+        progress(Progress),
+        more_copied_args(env: &MacroEnv),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+    extract(
+        rewrite(extract_rewriter),
+        rewrite_to(
+            MetaBasisGenerator => ast::qpu::BasisGenerator,
+            MetaBasis => ast::qpu::Basis,
+            MetaVector => ast::qpu::Vector,
+        ),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+}]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetaBasisGenerator {
     /// Invokes a macro. Example syntax:
@@ -290,6 +367,7 @@ pub enum MetaBasisGenerator {
     /// ```
     BasisGeneratorMacro {
         name: String,
+        #[gen_rebuild::skip_recurse(extract)]
         arg: Box<MetaBasis>,
         dbg: Option<DebugLoc>,
     },
@@ -300,7 +378,10 @@ pub enum MetaBasisGenerator {
     /// __REVOLVE__('p', 'm')
     /// ```
     Revolve {
+        // There are no bases to substitute in these two fields
+        #[gen_rebuild::skip_recurse(substitute_basis_alias)]
         v1: MetaVector,
+        #[gen_rebuild::skip_recurse(substitute_basis_alias)]
         v2: MetaVector,
         dbg: Option<DebugLoc>,
     },
@@ -310,20 +391,21 @@ impl MetaBasisGenerator {
     /// Extracts a plain-AST `@qpu` BasisGenerator from this metaQwerty basis
     /// generator. Returns an error instead if metaQwerty constructs are still
     /// present.
-    pub fn extract(&self) -> Result<ast::qpu::BasisGenerator, LowerError> {
-        match self {
-            MetaBasisGenerator::Revolve { v1, v2, dbg } => v1.extract().and_then(|ast_v1| {
-                v2.extract()
-                    .map(|ast_v2| ast::qpu::BasisGenerator::Revolve {
-                        v1: ast_v1,
-                        v2: ast_v2,
-                        dbg: dbg.clone(),
-                    })
-            }),
+    pub fn extract(self) -> Result<ast::qpu::BasisGenerator, LowerError> {
+        rebuild!(MetaBasisGenerator, self, extract)
+    }
 
-            MetaBasisGenerator::BasisGeneratorMacro { dbg, .. } => Err(LowerError {
+    pub(crate) fn extract_rewriter(
+        rewritten: rewrite_ty!(MetaBasisGenerator, extract),
+    ) -> Result<ast::qpu::BasisGenerator, LowerError> {
+        rewrite_match! {MetaBasisGenerator, extract, rewritten,
+            Revolve { v1, v2, dbg } => {
+                Ok(ast::qpu::BasisGenerator::Revolve { v1, v2, dbg })
+            }
+
+            BasisGeneratorMacro { dbg, .. } => Err(LowerError {
                 kind: LowerErrorKind::NotFullyFolded,
-                dbg: dbg.clone(),
+                dbg,
             }),
         }
     }
@@ -343,6 +425,37 @@ impl fmt::Display for MetaBasisGenerator {
     }
 }
 
+#[gen_rebuild {
+    substitute_dim_var(
+        more_copied_args(dim_var: &DimVar, new_dim_expr: &DimExpr),
+        recurse_attrs,
+    ),
+    substitute_basis_alias(
+        rewrite(substitute_basis_alias_rewriter),
+        more_copied_args(basis_alias: &str, new_basis: &MetaBasis),
+    ),
+    substitute_vector_alias(
+        more_copied_args(vector_alias: &str, new_vector: &MetaVector),
+        recurse_attrs,
+    ),
+    expand(
+        rewrite(expand_rewriter),
+        progress(Progress),
+        more_copied_args(env: &MacroEnv),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+    extract(
+        rewrite(extract_rewriter),
+        rewrite_to(
+            MetaBasis => ast::qpu::Basis,
+            MetaBasisGenerator => ast::qpu::BasisGenerator,
+            MetaVector => ast::qpu::Vector,
+        ),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+}]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetaBasis {
     /// A basis alias name. Example syntax:
@@ -357,6 +470,7 @@ pub enum MetaBasis {
     /// ```
     BasisAliasRec {
         name: String,
+        #[gen_rebuild::skip_recurse(substitute_basis_alias, substitute_vector_alias, extract)]
         param: DimExpr,
         dbg: Option<DebugLoc>,
     },
@@ -367,6 +481,7 @@ pub enum MetaBasis {
     /// ```
     BasisBroadcastTensor {
         val: Box<MetaBasis>,
+        #[gen_rebuild::skip_recurse(substitute_basis_alias, substitute_vector_alias, extract)]
         factor: DimExpr,
         dbg: Option<DebugLoc>,
     },
@@ -409,46 +524,38 @@ pub enum MetaBasis {
 
 impl MetaBasis {
     /// Extracts a plain-AST `@qpu` Basis from this metaQwerty basis.
-    pub fn extract(&self) -> Result<ast::qpu::Basis, LowerError> {
-        match self {
-            MetaBasis::BasisLiteral { vecs, dbg } => vecs
-                .iter()
-                .map(MetaVector::extract)
-                .collect::<Result<Vec<ast::qpu::Vector>, LowerError>>()
-                .map(|ast_vecs| ast::qpu::Basis::BasisLiteral {
-                    vecs: ast_vecs,
-                    dbg: dbg.clone(),
-                }),
-            MetaBasis::EmptyBasisLiteral { dbg } => {
-                Ok(ast::qpu::Basis::EmptyBasisLiteral { dbg: dbg.clone() })
-            }
-            MetaBasis::BasisBiTensor { left, right, dbg } => left.extract().and_then(|ast_left| {
-                right
-                    .extract()
-                    .map(|ast_right| ast::qpu::Basis::BasisTensor {
-                        bases: vec![ast_left, ast_right],
-                        dbg: dbg.clone(),
-                    })
-            }),
-            MetaBasis::ApplyBasisGenerator {
-                basis,
-                generator,
-                dbg,
-            } => basis.extract().and_then(|ast_basis| {
-                generator
-                    .extract()
-                    .map(|ast_generator| ast::qpu::Basis::ApplyBasisGenerator {
-                        basis: Box::new(ast_basis),
-                        generator: ast_generator,
-                        dbg: dbg.clone(),
-                    })
-            }),
+    pub fn extract(self) -> Result<ast::qpu::Basis, LowerError> {
+        rebuild!(MetaBasis, self, extract)
+    }
 
-            MetaBasis::BasisAlias { dbg, .. }
-            | MetaBasis::BasisAliasRec { dbg, .. }
-            | MetaBasis::BasisBroadcastTensor { dbg, .. } => Err(LowerError {
+    pub(crate) fn extract_rewriter(
+        rewritten: rewrite_ty!(MetaBasis, extract),
+    ) -> Result<ast::qpu::Basis, LowerError> {
+        rewrite_match! {MetaBasis, extract, rewritten,
+            BasisLiteral { vecs, dbg } => Ok(ast::qpu::Basis::BasisLiteral { vecs, dbg }),
+
+            EmptyBasisLiteral { dbg } => Ok(ast::qpu::Basis::EmptyBasisLiteral { dbg }),
+
+            BasisBiTensor { left, right, dbg } => {
+                Ok(ast::qpu::Basis::BasisTensor {
+                    bases: vec![left, right],
+                    dbg,
+                })
+            }
+
+            ApplyBasisGenerator { basis, generator, dbg } => {
+                Ok(ast::qpu::Basis::ApplyBasisGenerator {
+                    basis: Box::new(basis),
+                    generator,
+                    dbg,
+                })
+            }
+
+            BasisAlias { dbg, .. }
+            | BasisAliasRec { dbg, .. }
+            | BasisBroadcastTensor { dbg, .. } => Err(LowerError {
                 kind: LowerErrorKind::NotFullyFolded,
-                dbg: dbg.clone(),
+                dbg,
             }),
         }
     }
@@ -485,6 +592,53 @@ impl fmt::Display for MetaBasis {
     }
 }
 
+#[gen_rebuild {
+    expand_instantiations(
+        rewrite(expand_instantiations_rewriter),
+        result_err(LowerError),
+        // fn rebuild<F>(root: MetaExpr, f: F)
+        //     where F: FnMut(String, DimExpr, Option<DebugLoc>) -> Result<String, LowerError>
+        // { ... }
+        more_generic_params(F),
+        more_moved_args(f: F),
+        more_where(F: FnMut(String, DimExpr, Option<DebugLoc>) -> Result<String, LowerError>),
+    ),
+    substitute_dim_var(
+        more_copied_args(dim_var: &DimVar, new_dim_expr: &DimExpr),
+        recurse_attrs,
+    ),
+    substitute_vector_alias(
+        more_copied_args(vector_alias: &str, new_vector: &MetaVector),
+        recurse_attrs,
+    ),
+    substitute_basis_alias(
+        more_copied_args(basis_alias: &str, new_basis: &MetaBasis),
+        recurse_attrs,
+    ),
+    substitute_variable(
+        rewrite(substitute_variable_rewriter),
+        more_copied_args(var_name: &str, new_expr: &MetaExpr),
+    ),
+    expand(
+        rewrite(expand_rewriter),
+        progress(Progress),
+        more_copied_args(env: &MacroEnv),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+    extract(
+        rewrite(extract_rewriter),
+        rewrite_to(
+            MetaExpr => ast::qpu::Expr,
+            MetaBasis => ast::qpu::Basis,
+            MetaVector => ast::qpu::Vector,
+            DimExpr => usize,
+            FloatExpr => f64,
+        ),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+}]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetaExpr {
     /// Another example:
@@ -503,7 +657,7 @@ pub enum MetaExpr {
     /// ```
     BasisMacro {
         name: String,
-        arg: Box<MetaBasis>,
+        arg: MetaBasis,
         dbg: Option<DebugLoc>,
     },
 
@@ -513,6 +667,7 @@ pub enum MetaExpr {
     /// ```
     BroadcastTensor {
         val: Box<MetaExpr>,
+        #[gen_rebuild::skip_recurse(substitute_basis_alias, substitute_vector_alias)]
         factor: DimExpr,
         dbg: Option<DebugLoc>,
     },
@@ -524,6 +679,7 @@ pub enum MetaExpr {
     /// ```
     Instantiate {
         name: String,
+        #[gen_rebuild::skip_recurse(substitute_basis_alias, substitute_vector_alias)]
         param: DimExpr,
         dbg: Option<DebugLoc>,
     },
@@ -533,8 +689,12 @@ pub enum MetaExpr {
     /// (op[[i] for i in range(N))
     /// ```
     Repeat {
+        // We can't expand this yet because the iter_var would not be defined
+        // in the env, but that is not an error
+        #[gen_rebuild::skip_recurse(expand)]
         for_each: Box<MetaExpr>,
         iter_var: String,
+        #[gen_rebuild::skip_recurse(substitute_basis_alias, substitute_vector_alias)]
         upper_bound: DimExpr,
         dbg: Option<DebugLoc>,
     },
@@ -557,6 +717,7 @@ pub enum MetaExpr {
     /// ```
     EmbedClassical {
         func: Box<MetaExpr>,
+        #[gen_rebuild::skip_recurse]
         embed_kind: EmbedKind,
         dbg: Option<DebugLoc>,
     },
@@ -635,6 +796,7 @@ pub enum MetaExpr {
     /// (1/4)*'p' + (3/4)*'m'
     /// ```
     NonUniformSuperpos {
+        #[gen_rebuild::skip_recurse(substitute_basis_alias)]
         pairs: Vec<(FloatExpr, MetaVector)>,
         dbg: Option<DebugLoc>,
     },
@@ -649,6 +811,7 @@ pub enum MetaExpr {
     /// 'p' ^ 'm'
     /// ```
     Ensemble {
+        #[gen_rebuild::skip_recurse(substitute_basis_alias)]
         pairs: Vec<(FloatExpr, MetaVector)>,
         dbg: Option<DebugLoc>,
     },
@@ -668,7 +831,10 @@ pub enum MetaExpr {
     /// ```text
     /// 'p' + 'm'
     /// ```
-    QLit { vec: MetaVector },
+    QLit {
+        #[gen_rebuild::skip_recurse(substitute_basis_alias)]
+        vec: MetaVector,
+    },
 
     /// A classical bit literal. Example syntax:
     /// ```text
@@ -676,6 +842,7 @@ pub enum MetaExpr {
     /// ```
     BitLiteral {
         val: UBig,
+        #[gen_rebuild::skip_recurse(substitute_basis_alias, substitute_vector_alias)]
         n_bits: DimExpr,
         dbg: Option<DebugLoc>,
     },
@@ -709,178 +876,146 @@ impl MetaExpr {
     }
 
     /// Extracts a plain-AST `@qpu` expression from this metaQwerty expression.
-    pub fn extract(&self) -> Result<ast::qpu::Expr, LowerError> {
-        match self {
-            MetaExpr::Variable { name, dbg } => Ok(ast::qpu::Expr::Variable(ast::Variable {
-                name: name.to_string(),
-                dbg: dbg.clone(),
-            })),
-            MetaExpr::UnitLiteral { dbg } => {
-                Ok(ast::qpu::Expr::UnitLiteral(ast::qpu::UnitLiteral {
-                    dbg: dbg.clone(),
-                }))
-            }
-            MetaExpr::EmbedClassical {
-                func,
-                embed_kind,
-                dbg,
-            } => {
-                if let MetaExpr::Variable { name, dbg: _ } = &**func {
+    pub fn extract(self) -> Result<ast::qpu::Expr, LowerError> {
+        rebuild!(MetaExpr, self, extract)
+    }
+
+    pub(crate) fn extract_rewriter(
+        rewritten: rewrite_ty!(MetaExpr, extract),
+    ) -> Result<ast::qpu::Expr, LowerError> {
+        rewrite_match! {MetaExpr, extract, rewritten,
+            Variable { name, dbg } => Ok(ast::qpu::Expr::Variable(ast::Variable { name, dbg })),
+
+            UnitLiteral { dbg } => Ok(ast::qpu::Expr::UnitLiteral(ast::qpu::UnitLiteral { dbg })),
+
+            EmbedClassical { func, embed_kind, dbg } => {
+                if let ast::qpu::Expr::Variable(ast::Variable { name, dbg: _ }) = func {
                     Ok(ast::qpu::Expr::EmbedClassical(ast::qpu::EmbedClassical {
-                        func_name: name.to_string(),
-                        embed_kind: *embed_kind,
-                        dbg: dbg.clone(),
+                        func_name: name,
+                        embed_kind,
+                        dbg,
                     }))
                 } else {
                     Err(LowerError {
-                        kind: LowerErrorKind::Malformed,
-                        dbg: dbg.clone(),
+                        kind: LowerErrorKind::InvalidEmbedOperand,
+                        dbg,
                     })
                 }
             }
-            MetaExpr::Adjoint { func, dbg } => func.extract().map(|ast_func| {
-                ast::qpu::Expr::Adjoint(ast::qpu::Adjoint {
-                    func: Box::new(ast_func),
-                    dbg: dbg.clone(),
-                })
-            }),
-            MetaExpr::Pipe { lhs, rhs, dbg } => lhs.extract().and_then(|ast_lhs| {
-                rhs.extract().map(|ast_rhs| {
-                    ast::qpu::Expr::Pipe(ast::qpu::Pipe {
-                        lhs: Box::new(ast_lhs),
-                        rhs: Box::new(ast_rhs),
-                        dbg: dbg.clone(),
-                    })
-                })
-            }),
-            MetaExpr::Measure { basis, dbg } => basis.extract().map(|ast_basis| {
-                ast::qpu::Expr::Measure(ast::qpu::Measure {
-                    basis: ast_basis,
-                    dbg: dbg.clone(),
-                })
-            }),
-            MetaExpr::Discard { dbg } => Ok(ast::qpu::Expr::Discard(ast::qpu::Discard {
-                dbg: dbg.clone(),
-            })),
-            MetaExpr::BiTensor { left, right, dbg } => left.extract().and_then(|ast_left| {
-                right.extract().map(|ast_right| {
-                    ast::qpu::Expr::Tensor(ast::qpu::Tensor {
-                        vals: vec![ast_left, ast_right],
-                        dbg: dbg.clone(),
-                    })
-                })
-            }),
-            MetaExpr::BasisTranslation { bin, bout, dbg } => bin.extract().and_then(|ast_bin| {
-                bout.extract().map(|ast_bout| {
-                    ast::qpu::Expr::BasisTranslation(ast::qpu::BasisTranslation {
-                        bin: ast_bin,
-                        bout: ast_bout,
-                        dbg: dbg.clone(),
-                    })
-                })
-            }),
-            MetaExpr::Predicated {
-                then_func,
-                else_func,
-                pred,
-                dbg,
-            } => then_func.extract().and_then(|ast_then| {
-                else_func.extract().and_then(|ast_else| {
-                    pred.extract().map(|ast_pred| {
-                        ast::qpu::Expr::Predicated(ast::qpu::Predicated {
-                            then_func: Box::new(ast_then),
-                            else_func: Box::new(ast_else),
-                            pred: ast_pred,
-                            dbg: dbg.clone(),
-                        })
-                    })
-                })
-            }),
-            MetaExpr::NonUniformSuperpos { pairs, dbg } => pairs
-                .iter()
-                .map(|(prob, vec)| {
-                    prob.extract().and_then(|prob_double| {
-                        vec.extract().and_then(|ast_vec| {
-                            ast_vec
-                                .convert_to_qubit_literal()
-                                .ok_or_else(|| LowerError {
-                                    kind: LowerErrorKind::Malformed,
-                                    dbg: ast_vec.get_dbg(),
-                                })
-                                .map(|ast_qlit| (prob_double, ast_qlit))
-                        })
-                    })
-                })
-                .collect::<Result<Vec<(f64, ast::qpu::QLit)>, LowerError>>()
-                .map(|ast_pairs| {
-                    ast::qpu::Expr::NonUniformSuperpos(ast::qpu::NonUniformSuperpos {
-                        pairs: ast_pairs,
-                        dbg: dbg.clone(),
-                    })
-                }),
-            MetaExpr::Ensemble { pairs, dbg } => pairs
-                .iter()
-                .map(|(prob, vec)| {
-                    prob.extract().and_then(|prob_double| {
-                        vec.extract().and_then(|ast_vec| {
-                            ast_vec
-                                .convert_to_qubit_literal()
-                                .ok_or_else(|| LowerError {
-                                    kind: LowerErrorKind::Malformed,
-                                    dbg: ast_vec.get_dbg(),
-                                })
-                                .map(|ast_qlit| (prob_double, ast_qlit))
-                        })
-                    })
-                })
-                .collect::<Result<Vec<(f64, ast::qpu::QLit)>, LowerError>>()
-                .map(|ast_pairs| {
-                    ast::qpu::Expr::Ensemble(ast::qpu::Ensemble {
-                        pairs: ast_pairs,
-                        dbg: dbg.clone(),
-                    })
-                }),
-            MetaExpr::Conditional {
-                then_expr,
-                else_expr,
-                cond,
-                dbg,
-            } => then_expr.extract().and_then(|ast_then| {
-                else_expr.extract().and_then(|ast_else| {
-                    cond.extract().map(|ast_cond| {
-                        ast::qpu::Expr::Conditional(ast::qpu::Conditional {
-                            then_expr: Box::new(ast_then),
-                            else_expr: Box::new(ast_else),
-                            cond: Box::new(ast_cond),
-                            dbg: dbg.clone(),
-                        })
-                    })
-                })
-            }),
-            MetaExpr::QLit { vec } => vec.extract().and_then(|ast_vec| {
-                ast_vec
-                    .convert_to_qubit_literal()
-                    .ok_or_else(|| LowerError {
-                        kind: LowerErrorKind::Malformed,
-                        dbg: ast_vec.get_dbg(),
-                    })
-                    .map(|ast_qlit| ast::qpu::Expr::QLit(ast_qlit))
-            }),
-            MetaExpr::BitLiteral { val, n_bits, dbg } => n_bits.extract().map(|n_bits_int| {
-                ast::qpu::Expr::BitLiteral(ast::BitLiteral {
-                    val: val.clone(),
-                    n_bits: n_bits_int,
-                    dbg: dbg.clone(),
-                })
-            }),
 
-            MetaExpr::ExprMacro { dbg, .. }
-            | MetaExpr::BasisMacro { dbg, .. }
-            | MetaExpr::BroadcastTensor { dbg, .. }
-            | MetaExpr::Instantiate { dbg, .. }
-            | MetaExpr::Repeat { dbg, .. } => Err(LowerError {
+            Adjoint { func, dbg } => {
+                Ok(ast::qpu::Expr::Adjoint(ast::qpu::Adjoint {
+                    func: Box::new(func),
+                    dbg,
+                }))
+            }
+
+            Pipe { lhs, rhs, dbg } => {
+                Ok(ast::qpu::Expr::Pipe(ast::qpu::Pipe {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                    dbg,
+                }))
+            }
+
+            Measure { basis, dbg } => {
+                Ok(ast::qpu::Expr::Measure(ast::qpu::Measure {
+                    basis,
+                    dbg,
+                }))
+            }
+
+            Discard { dbg } => Ok(ast::qpu::Expr::Discard(ast::qpu::Discard { dbg })),
+
+            BiTensor { left, right, dbg } => {
+                Ok(ast::qpu::Expr::Tensor(ast::qpu::Tensor {
+                    vals: vec![left, right],
+                    dbg,
+                }))
+            }
+
+            BasisTranslation { bin, bout, dbg } => {
+                Ok(ast::qpu::Expr::BasisTranslation(ast::qpu::BasisTranslation {
+                    bin,
+                    bout,
+                    dbg,
+                }))
+            }
+
+            Predicated { then_func, else_func, pred, dbg } => {
+                Ok(ast::qpu::Expr::Predicated(ast::qpu::Predicated {
+                    then_func: Box::new(then_func),
+                    else_func: Box::new(else_func),
+                    pred,
+                    dbg,
+                }))
+            }
+
+            NonUniformSuperpos { pairs, dbg } => {
+                let pairs = pairs
+                    .into_iter()
+                    .map(|(prob, vec)| {
+                        let qlit = vec.convert_to_qubit_literal()
+                            .ok_or_else(|| LowerError {
+                                kind: LowerErrorKind::IllegalQubitSymbolInQubitLiteral,
+                                dbg: vec.get_dbg(),
+                            })?;
+                        Ok((prob, qlit))
+                    })
+                    .collect::<Result<Vec<_>, LowerError>>()?;
+                Ok(ast::qpu::Expr::NonUniformSuperpos(ast::qpu::NonUniformSuperpos {
+                    pairs,
+                    dbg,
+                }))
+            }
+
+            Ensemble { pairs, dbg } => {
+                let pairs = pairs
+                    .into_iter()
+                    .map(|(prob, vec)| {
+                        let qlit = vec.convert_to_qubit_literal()
+                            .ok_or_else(|| LowerError {
+                                kind: LowerErrorKind::IllegalQubitSymbolInQubitLiteral,
+                                dbg: vec.get_dbg(),
+                            })?;
+                        Ok((prob, qlit))
+                    })
+                    .collect::<Result<Vec<_>, LowerError>>()?;
+                Ok(ast::qpu::Expr::Ensemble(ast::qpu::Ensemble {
+                    pairs,
+                    dbg,
+                }))
+            }
+
+            Conditional { then_expr, else_expr, cond, dbg } => {
+                Ok(ast::qpu::Expr::Conditional(ast::qpu::Conditional {
+                    then_expr: Box::new(then_expr),
+                    else_expr: Box::new(else_expr),
+                    cond: Box::new(cond),
+                    dbg,
+                }))
+            }
+
+            QLit { vec } => {
+                let qlit = vec.convert_to_qubit_literal()
+                    .ok_or_else(|| LowerError {
+                        kind: LowerErrorKind::IllegalQubitSymbolInQubitLiteral,
+                        dbg: vec.get_dbg(),
+                    })?;
+                Ok(ast::qpu::Expr::QLit(qlit))
+            }
+
+            BitLiteral { val, n_bits, dbg } => {
+                Ok(ast::qpu::Expr::BitLiteral(ast::BitLiteral { val, n_bits, dbg }))
+            }
+
+            ExprMacro { dbg, .. }
+            | BasisMacro { dbg, .. }
+            | BroadcastTensor { dbg, .. }
+            | Instantiate { dbg, .. }
+            | Repeat { dbg, .. } => Err(LowerError {
                 kind: LowerErrorKind::NotFullyFolded,
-                dbg: dbg.clone(),
+                dbg,
             }),
         }
     }
@@ -1033,6 +1168,28 @@ impl fmt::Display for RecDefParam {
     }
 }
 
+#[gen_rebuild {
+    substitute_dim_var(
+        more_copied_args(dim_var: &DimVar, new_dim_expr: &DimExpr),
+        recurse_attrs,
+    ),
+    expand(
+        rewrite(expand_rewriter),
+        progress(Progress),
+        more_copied_args(env: &mut MacroEnv),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+    extract(
+        rewrite(extract_rewriter),
+        rewrite_to(
+            MetaStmt => ast::Stmt<ast::qpu::Expr>,
+            MetaExpr => ast::qpu::Expr,
+        ),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+}]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetaStmt {
     /// A macro definition that takes an expression argument and expands to an
@@ -1041,8 +1198,10 @@ pub enum MetaStmt {
     /// f.expr.xor = __EMBED_XOR__(f)
     /// ```
     ExprMacroDef {
+        #[gen_rebuild::skip_recurse]
         lhs_pat: ExprMacroPattern,
         lhs_name: String,
+        #[gen_rebuild::skip_recurse(expand, extract)]
         rhs: MetaExpr,
         dbg: Option<DebugLoc>,
     },
@@ -1057,8 +1216,10 @@ pub enum MetaStmt {
     /// b.measure = __MEASURE__(b)
     /// ```
     BasisMacroDef {
+        #[gen_rebuild::skip_recurse]
         lhs_pat: BasisMacroPattern,
         lhs_name: String,
+        #[gen_rebuild::skip_recurse(expand, extract)]
         rhs: MetaExpr,
         dbg: Option<DebugLoc>,
     },
@@ -1069,8 +1230,10 @@ pub enum MetaStmt {
     /// {bv1, bv2}.revolve = __REVOLVE__(bv1, bv2)
     /// ```
     BasisGeneratorMacroDef {
+        #[gen_rebuild::skip_recurse]
         lhs_pat: BasisMacroPattern,
         lhs_name: String,
+        #[gen_rebuild::skip_recurse(expand, extract)]
         rhs: MetaBasisGenerator,
         dbg: Option<DebugLoc>,
     },
@@ -1081,6 +1244,7 @@ pub enum MetaStmt {
     /// ```
     VectorSymbolDef {
         lhs: char,
+        #[gen_rebuild::skip_recurse(expand, extract)]
         rhs: MetaVector,
         dbg: Option<DebugLoc>,
     },
@@ -1091,6 +1255,7 @@ pub enum MetaStmt {
     /// ```
     BasisAliasDef {
         lhs: String,
+        #[gen_rebuild::skip_recurse(expand, extract)]
         rhs: MetaBasis,
         dbg: Option<DebugLoc>,
     },
@@ -1101,7 +1266,9 @@ pub enum MetaStmt {
     /// ```
     BasisAliasRecDef {
         lhs: String,
+        #[gen_rebuild::skip_recurse]
         param: RecDefParam,
+        #[gen_rebuild::skip_recurse(expand, extract)]
         rhs: MetaBasis,
         dbg: Option<DebugLoc>,
     },
@@ -1143,46 +1310,39 @@ pub enum MetaStmt {
 }
 
 impl MetaStmt {
-    // TODO: don't duplicate with classical.rs
     /// Extracts a plain-AST `@qpu` statement from this metaQwerty statement.
-    pub fn extract(&self) -> Result<ast::Stmt<ast::qpu::Expr>, LowerError> {
-        match self {
-            MetaStmt::Expr { expr } => expr.extract().map(|ast_expr| {
-                ast::Stmt::Expr(ast::StmtExpr {
-                    expr: ast_expr,
-                    dbg: expr.get_dbg(),
-                })
-            }),
-            MetaStmt::Assign { lhs, rhs, dbg } => rhs.extract().map(|ast_rhs| {
-                ast::Stmt::Assign(ast::Assign {
-                    lhs: lhs.to_string(),
-                    rhs: ast_rhs,
-                    dbg: dbg.clone(),
-                })
-            }),
-            MetaStmt::UnpackAssign { lhs, rhs, dbg } => rhs.extract().map(|ast_rhs| {
-                ast::Stmt::UnpackAssign(ast::UnpackAssign {
-                    lhs: lhs.clone(),
-                    rhs: ast_rhs,
-                    dbg: dbg.clone(),
-                })
-            }),
-            MetaStmt::Return { val, dbg } => val.extract().map(|ast_val| {
-                ast::Stmt::Return(ast::Return {
-                    val: ast_val,
-                    dbg: dbg.clone(),
-                })
-            }),
+    pub fn extract(self) -> Result<ast::Stmt<ast::qpu::Expr>, LowerError> {
+        rebuild!(MetaStmt, self, extract)
+    }
+
+    pub(crate) fn extract_rewriter(
+        rewritten: rewrite_ty!(MetaStmt, extract),
+    ) -> Result<ast::Stmt<ast::qpu::Expr>, LowerError> {
+        Ok(rewrite_match! {MetaStmt, extract, rewritten,
+            // TODO: don't duplicate this part with classical.rs
+            Expr { expr } => {
+                let dbg = expr.get_dbg();
+                ast::Stmt::Expr(ast::StmtExpr { expr, dbg })
+            }
+            Assign { lhs, rhs, dbg } => {
+                ast::Stmt::Assign(ast::Assign { lhs, rhs, dbg })
+            }
+            UnpackAssign { lhs, rhs, dbg } => {
+                ast::Stmt::UnpackAssign(ast::UnpackAssign { lhs, rhs, dbg })
+            }
+            Return { val, dbg } => {
+                ast::Stmt::Return(ast::Return { val, dbg })
+            }
 
             // Definition of macros does not present any problem in conversion;
             // it is using them that is an issue.
-            MetaStmt::ExprMacroDef { dbg, .. }
-            | MetaStmt::BasisMacroDef { dbg, .. }
-            | MetaStmt::BasisGeneratorMacroDef { dbg, .. }
-            | MetaStmt::VectorSymbolDef { dbg, .. }
-            | MetaStmt::BasisAliasDef { dbg, .. }
-            | MetaStmt::BasisAliasRecDef { dbg, .. } => Ok(ast::Stmt::trivial(dbg.clone())),
-        }
+            ExprMacroDef { dbg, .. }
+            | BasisMacroDef { dbg, .. }
+            | BasisGeneratorMacroDef { dbg, .. }
+            | VectorSymbolDef { dbg, .. }
+            | BasisAliasDef { dbg, .. }
+            | BasisAliasRecDef { dbg, .. } => ast::Stmt::trivial(dbg),
+        })
     }
 }
 

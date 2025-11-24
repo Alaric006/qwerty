@@ -1,0 +1,13 @@
+[package]
+name = "qwerty_ast_macros"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2.0.110", features = ["full", "proc-macro", "parsing", "printing", "extra-traits"] }
+quote = "1.0.35"
+proc-macro2 = "1.0.95"
+convert_case = "0.10.0"

@@ -5,11 +5,34 @@ use crate::{
     },
     dbg::DebugLoc,
     error::{LowerError, LowerErrorKind},
-    meta::DimExpr,
+    meta::{DimExpr, DimVar, Progress, expand::MacroEnv},
 };
 use dashu::integer::UBig;
+use qwerty_ast_macros::{gen_rebuild, rebuild, rewrite_match, rewrite_ty};
 use std::fmt;
 
+#[gen_rebuild {
+    substitute_dim_var(
+        more_copied_args(dim_var: &DimVar, new_dim_expr: &DimExpr),
+        recurse_attrs,
+    ),
+    expand(
+        rewrite(expand_rewriter),
+        progress(Progress),
+        more_copied_args(env: &mut MacroEnv),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+    extract(
+        rewrite(extract_rewriter),
+        rewrite_to(
+            MetaExpr => ast::classical::Expr,
+            DimExpr => usize,
+        ),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+}]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetaExpr {
     /// Take the modulus of a bit register. Example syntax:
@@ -46,6 +69,7 @@ pub enum MetaExpr {
     /// ~x
     /// ```
     UnaryOp {
+        #[gen_rebuild::skip_recurse]
         kind: UnaryOpKind,
         val: Box<MetaExpr>,
         dbg: Option<DebugLoc>,
@@ -56,6 +80,7 @@ pub enum MetaExpr {
     /// x & y
     /// ```
     BinaryOp {
+        #[gen_rebuild::skip_recurse]
         kind: BinaryOpKind,
         left: Box<MetaExpr>,
         right: Box<MetaExpr>,
@@ -67,6 +92,7 @@ pub enum MetaExpr {
     /// x.xor_reduce()
     /// ```
     ReduceOp {
+        #[gen_rebuild::skip_recurse]
         kind: BinaryOpKind,
         val: Box<MetaExpr>,
         dbg: Option<DebugLoc>,
@@ -134,113 +160,82 @@ impl MetaExpr {
 
     /// Extracts a plain-AST `@classical` expression from a metaQwerty
     /// `@classical` expression.
-    pub fn extract(&self) -> Result<ast::classical::Expr, LowerError> {
-        match self {
+    pub fn extract(self) -> Result<ast::classical::Expr, LowerError> {
+        rebuild!(MetaExpr, self, extract)
+    }
+
+    pub(crate) fn extract_rewriter(
+        rewritten: rewrite_ty!(MetaExpr, extract),
+    ) -> Result<ast::classical::Expr, LowerError> {
+        rewrite_match! {MetaExpr, extract, rewritten,
             // For now, this should be folded into a bitwise AND.
-            MetaExpr::Mod { dbg, .. } => Err(LowerError {
+            Mod { dbg, .. } => Err(LowerError {
                 kind: LowerErrorKind::NotFullyFolded,
-                dbg: dbg.clone(),
-            }),
-            MetaExpr::Variable { name, dbg } => Ok(ast::classical::Expr::Variable(ast::Variable {
-                name: name.to_string(),
-                dbg: dbg.clone(),
-            })),
-            MetaExpr::Slice {
-                val,
-                lower,
-                upper,
                 dbg,
-            } => val.extract().and_then(|ast_val| {
-                lower.extract().and_then(|lower_int| {
-                    upper
-                        .as_ref()
-                        .map(DimExpr::extract)
-                        .transpose()
-                        .map(|upper_int_opt| {
-                            ast::classical::Expr::Slice(ast::classical::Slice {
-                                val: Box::new(ast_val),
-                                lower: lower_int,
-                                upper: upper_int_opt,
-                                dbg: dbg.clone(),
-                            })
-                        })
-                })
             }),
-            MetaExpr::UnaryOp { kind, val, dbg } => val.extract().map(|ast_val| {
-                ast::classical::Expr::UnaryOp(ast::classical::UnaryOp {
-                    kind: *kind,
-                    val: Box::new(ast_val),
-                    dbg: dbg.clone(),
-                })
-            }),
-            MetaExpr::BinaryOp {
-                kind,
-                left,
-                right,
-                dbg,
-            } => left.extract().and_then(|ast_left| {
-                right.extract().map(|ast_right| {
-                    ast::classical::Expr::BinaryOp(ast::classical::BinaryOp {
-                        kind: *kind,
-                        left: Box::new(ast_left),
-                        right: Box::new(ast_right),
-                        dbg: dbg.clone(),
-                    })
-                })
-            }),
-            MetaExpr::ReduceOp { kind, val, dbg } => val.extract().map(|ast_val| {
-                ast::classical::Expr::ReduceOp(ast::classical::ReduceOp {
-                    kind: *kind,
-                    val: Box::new(ast_val),
-                    dbg: dbg.clone(),
-                })
-            }),
-            MetaExpr::ModMul {
-                x,
-                j,
-                y,
-                mod_n,
-                dbg,
-            } => x.extract().and_then(|x_int| {
-                j.extract().and_then(|j_int| {
-                    y.extract().and_then(|ast_y| {
-                        mod_n.extract().map(|mod_n_int| {
-                            ast::classical::Expr::ModMul(ast::classical::ModMul {
-                                x: x_int,
-                                j: j_int,
-                                y: Box::new(ast_y),
-                                mod_n: mod_n_int,
-                                dbg: dbg.clone(),
-                            })
-                        })
-                    })
-                })
-            }),
-            MetaExpr::BitLiteral { val, n_bits, dbg } => n_bits.extract().map(|n_bits_int| {
-                ast::classical::Expr::BitLiteral(ast::BitLiteral {
-                    val: val.clone(),
-                    n_bits: n_bits_int,
-                    dbg: dbg.clone(),
-                })
-            }),
-            MetaExpr::Repeat { val, amt, dbg } => val.extract().and_then(|ast_val| {
-                amt.extract().map(|amount_int| {
-                    ast::classical::Expr::Repeat(ast::classical::Repeat {
-                        val: Box::new(ast_val),
-                        amt: amount_int,
-                        dbg: dbg.clone(),
-                    })
-                })
-            }),
-            MetaExpr::Concat { left, right, dbg } => left.extract().and_then(|ast_left| {
-                right.extract().map(|ast_right| {
-                    ast::classical::Expr::Concat(ast::classical::Concat {
-                        left: Box::new(ast_left),
-                        right: Box::new(ast_right),
-                        dbg: dbg.clone(),
-                    })
-                })
-            }),
+            Variable { name, dbg } => {
+                Ok(ast::classical::Expr::Variable(ast::Variable { name, dbg }))
+            }
+            Slice { val, lower, upper, dbg, } => {
+                Ok(ast::classical::Expr::Slice(ast::classical::Slice {
+                    val: Box::new(val),
+                    lower,
+                    upper,
+                    dbg,
+                }))
+            }
+            UnaryOp { kind, val, dbg } => {
+                Ok(ast::classical::Expr::UnaryOp(ast::classical::UnaryOp {
+                    kind,
+                    val: Box::new(val),
+                    dbg,
+                }))
+            }
+            BinaryOp { kind, left, right, dbg } => {
+                Ok(ast::classical::Expr::BinaryOp(ast::classical::BinaryOp {
+                    kind,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                    dbg,
+                }))
+            }
+            ReduceOp { kind, val, dbg } => {
+                Ok(ast::classical::Expr::ReduceOp(ast::classical::ReduceOp {
+                    kind,
+                    val: Box::new(val),
+                    dbg,
+                }))
+            }
+            ModMul { x, j, y, mod_n, dbg } => {
+                Ok(ast::classical::Expr::ModMul(ast::classical::ModMul {
+                    x,
+                    j,
+                    y: Box::new(y),
+                    mod_n,
+                    dbg,
+                }))
+            }
+            BitLiteral { val, n_bits, dbg } => {
+                Ok(ast::classical::Expr::BitLiteral(ast::BitLiteral {
+                    val,
+                    n_bits,
+                    dbg,
+                }))
+            }
+            Repeat { val, amt, dbg } => {
+                Ok(ast::classical::Expr::Repeat(ast::classical::Repeat {
+                    val: Box::new(val),
+                    amt,
+                    dbg,
+                }))
+            }
+            Concat { left, right, dbg } => {
+                Ok(ast::classical::Expr::Concat(ast::classical::Concat {
+                    left: Box::new(left),
+                    right: Box::new(right),
+                    dbg,
+                }))
+            }
         }
     }
 }
@@ -302,6 +297,27 @@ impl fmt::Display for MetaExpr {
     }
 }
 
+#[gen_rebuild {
+    substitute_dim_var(
+        more_copied_args(dim_var: &DimVar, new_dim_expr: &DimExpr),
+        recurse_attrs,
+    ),
+    expand(
+        progress(Progress),
+        more_copied_args(env: &mut MacroEnv),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+    extract(
+        rewrite(extract_rewriter),
+        rewrite_to(
+            MetaStmt => ast::Stmt<ast::classical::Expr>,
+            MetaExpr => ast::classical::Expr,
+        ),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+}]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetaStmt {
     /// An expression statement. Example syntax:
@@ -343,35 +359,28 @@ pub enum MetaStmt {
 impl MetaStmt {
     /// Extracts a plain-AST `@classical` statement from a metaQwerty
     /// `@classical` statement.
-    pub fn extract(&self) -> Result<ast::Stmt<ast::classical::Expr>, LowerError> {
-        match self {
-            MetaStmt::Expr { expr } => expr.extract().map(|ast_expr| {
-                ast::Stmt::Expr(ast::StmtExpr {
-                    expr: ast_expr,
-                    dbg: expr.get_dbg(),
-                })
-            }),
-            MetaStmt::Assign { lhs, rhs, dbg } => rhs.extract().map(|ast_rhs| {
-                ast::Stmt::Assign(ast::Assign {
-                    lhs: lhs.to_string(),
-                    rhs: ast_rhs,
-                    dbg: dbg.clone(),
-                })
-            }),
-            MetaStmt::UnpackAssign { lhs, rhs, dbg } => rhs.extract().map(|ast_rhs| {
-                ast::Stmt::UnpackAssign(ast::UnpackAssign {
-                    lhs: lhs.clone(),
-                    rhs: ast_rhs,
-                    dbg: dbg.clone(),
-                })
-            }),
-            MetaStmt::Return { val, dbg } => val.extract().map(|ast_val| {
-                ast::Stmt::Return(ast::Return {
-                    val: ast_val,
-                    dbg: dbg.clone(),
-                })
-            }),
-        }
+    pub fn extract(self) -> Result<ast::Stmt<ast::classical::Expr>, LowerError> {
+        rebuild!(MetaStmt, self, extract)
+    }
+
+    pub(crate) fn extract_rewriter(
+        rewritten: rewrite_ty!(MetaStmt, extract),
+    ) -> Result<ast::Stmt<ast::classical::Expr>, LowerError> {
+        Ok(rewrite_match! {MetaStmt, extract, rewritten,
+            Expr { expr } => {
+                let dbg = expr.get_dbg();
+                ast::Stmt::Expr(ast::StmtExpr { expr, dbg })
+            }
+            Assign { lhs, rhs, dbg } => {
+                ast::Stmt::Assign(ast::Assign { lhs, rhs, dbg })
+            }
+            UnpackAssign { lhs, rhs, dbg } => {
+                ast::Stmt::UnpackAssign(ast::UnpackAssign { lhs, rhs, dbg })
+            }
+            Return { val, dbg } => {
+                ast::Stmt::Return(ast::Return { val, dbg })
+            }
+        })
     }
 }
 

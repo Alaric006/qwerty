@@ -2,10 +2,13 @@ use crate::{
     error::{LowerError, LowerErrorKind, TypeErrorKind},
     meta::{
         DimExpr, DimVar, MetaFunc, MetaFunctionDef, MetaProgram, MetaType, Progress,
-        infer::DimVarAssignments, qpu,
+        infer::DimVarAssignments,
+        qpu,
+        type_dim::{dim_expr, meta_type},
     },
 };
 use dashu::integer::IBig;
+use qwerty_ast_macros::rebuild;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 mod expand_classical;
@@ -135,57 +138,55 @@ impl MacroEnv {
 }
 
 impl DimExpr {
-    pub fn substitute_dim_var(&self, dim_var: DimVar, new_dim_expr: DimExpr) -> DimExpr {
+    pub fn substitute_dim_var(self, dim_var: &DimVar, new_dim_expr: &DimExpr) -> Self {
+        rebuild!(DimExpr, self, substitute_dim_var, dim_var, new_dim_expr)
+    }
+
+    /// Called by the `gen_rebuild` attribute macro invoked in `meta/type_dim.rs`.
+    pub(crate) fn substitute_dim_var_rewriter(
+        self,
+        dim_var: &DimVar,
+        new_dim_expr: &DimExpr,
+    ) -> Self {
         match self {
-            DimExpr::DimVar { var, .. } => {
-                if *var == dim_var {
-                    new_dim_expr
+            DimExpr::DimVar { var, dbg } => {
+                if &var == dim_var {
+                    new_dim_expr.clone()
                 } else {
-                    self.clone()
+                    DimExpr::DimVar { var, dbg }
                 }
             }
 
-            DimExpr::DimSum { left, right, dbg } => DimExpr::DimSum {
-                left: Box::new(left.substitute_dim_var(dim_var.clone(), new_dim_expr.clone())),
-                right: Box::new(right.substitute_dim_var(dim_var, new_dim_expr)),
-                dbg: dbg.clone(),
-            },
-
-            DimExpr::DimProd { left, right, dbg } => DimExpr::DimProd {
-                left: Box::new(left.substitute_dim_var(dim_var.clone(), new_dim_expr.clone())),
-                right: Box::new(right.substitute_dim_var(dim_var, new_dim_expr)),
-                dbg: dbg.clone(),
-            },
-
-            DimExpr::DimPow { base, pow, dbg } => DimExpr::DimPow {
-                base: Box::new(base.substitute_dim_var(dim_var.clone(), new_dim_expr.clone())),
-                pow: Box::new(pow.substitute_dim_var(dim_var, new_dim_expr)),
-                dbg: dbg.clone(),
-            },
-
-            DimExpr::DimNeg { val, dbg } => DimExpr::DimNeg {
-                val: Box::new(val.substitute_dim_var(dim_var, new_dim_expr)),
-                dbg: dbg.clone(),
-            },
-
-            DimExpr::DimConst { .. } => self.clone(),
+            other @ (DimExpr::DimSum { .. }
+            | DimExpr::DimProd { .. }
+            | DimExpr::DimPow { .. }
+            | DimExpr::DimNeg { .. }
+            | DimExpr::DimConst { .. }) => other,
         }
     }
 
-    pub fn expand(&self, env: &MacroEnv) -> Result<(DimExpr, Progress), LowerError> {
-        match self {
-            DimExpr::DimVar { var, dbg } => {
-                if let Some(dim_var_value) = env.dim_vars.get(var) {
+    pub fn expand(self, env: &MacroEnv) -> Result<(DimExpr, Progress), LowerError> {
+        rebuild!(DimExpr, self, expand, env)
+    }
+
+    pub(crate) fn expand_rewriter(
+        self,
+        env: &MacroEnv,
+        children_progress: Progress,
+    ) -> Result<(DimExpr, Progress), LowerError> {
+        match (self, children_progress) {
+            (DimExpr::DimVar { var, dbg }, _) => {
+                if let Some(dim_var_value) = env.dim_vars.get(&var) {
                     if let DimVarValue::Known(val) = dim_var_value {
                         Ok((
                             DimExpr::DimConst {
                                 val: val.clone(),
-                                dbg: dbg.clone(),
+                                dbg,
                             },
                             Progress::Full,
                         ))
                     } else {
-                        Ok((self.clone(), Progress::Partial))
+                        Ok((DimExpr::DimVar { var, dbg }, Progress::Partial))
                     }
                 } else {
                     Err(LowerError {
@@ -197,181 +198,60 @@ impl DimExpr {
                 }
             }
 
-            DimExpr::DimSum { left, right, dbg } => {
-                left.expand(env).and_then(|(expanded_left, left_prog)| {
-                    right.expand(env).map(|(expanded_right, right_prog)| {
-                        match (&expanded_left, &expanded_right, left_prog.join(right_prog)) {
-                            (
-                                DimExpr::DimConst { val: left_val, .. },
-                                DimExpr::DimConst { val: right_val, .. },
-                                prog @ Progress::Full,
-                            ) => (
-                                DimExpr::DimConst {
-                                    val: left_val + right_val,
-                                    dbg: dbg.clone(),
-                                },
-                                prog,
-                            ),
-                            (_, _, prog) => (
-                                DimExpr::DimSum {
-                                    left: Box::new(expanded_left),
-                                    right: Box::new(expanded_right),
-                                    dbg: dbg.clone(),
-                                },
-                                prog,
-                            ),
-                        }
-                    })
-                })
+            (DimExpr::DimSum { left, right, dbg }, Progress::Full) => {
+                let left_val = left.extract_bigint()?;
+                let right_val = right.extract_bigint()?;
+                let val = left_val + right_val;
+                Ok((DimExpr::DimConst { val, dbg }, Progress::Full))
             }
 
-            DimExpr::DimProd { left, right, dbg } => {
-                left.expand(env).and_then(|(expanded_left, left_prog)| {
-                    right.expand(env).map(|(expanded_right, right_prog)| {
-                        match (&expanded_left, &expanded_right, left_prog.join(right_prog)) {
-                            (
-                                DimExpr::DimConst { val: left_val, .. },
-                                DimExpr::DimConst { val: right_val, .. },
-                                prog @ Progress::Full,
-                            ) => (
-                                DimExpr::DimConst {
-                                    val: left_val * right_val,
-                                    dbg: dbg.clone(),
-                                },
-                                prog,
-                            ),
-                            (_, _, prog) => (
-                                DimExpr::DimProd {
-                                    left: Box::new(expanded_left),
-                                    right: Box::new(expanded_right),
-                                    dbg: dbg.clone(),
-                                },
-                                prog,
-                            ),
-                        }
-                    })
-                })
+            (DimExpr::DimProd { left, right, dbg }, Progress::Full) => {
+                let left_val = left.extract_bigint()?;
+                let right_val = right.extract_bigint()?;
+                let val = left_val * right_val;
+                Ok((DimExpr::DimConst { val, dbg }, Progress::Full))
             }
 
-            DimExpr::DimPow { base, pow, dbg } => {
-                base.expand(env).and_then(|(expanded_base, base_prog)| {
-                    pow.expand(env).and_then(|(expanded_pow, pow_prog)| {
-                        match (&expanded_base, &expanded_pow, base_prog.join(pow_prog)) {
-                            (
-                                DimExpr::DimConst { val: base_val, .. },
-                                DimExpr::DimConst { .. },
-                                prog @ Progress::Full,
-                            ) => expanded_pow.extract().map(|pow_int| {
-                                (
-                                    DimExpr::DimConst {
-                                        val: base_val.pow(pow_int),
-                                        dbg: dbg.clone(),
-                                    },
-                                    prog,
-                                )
-                            }),
-                            (_, _, prog) => Ok((
-                                DimExpr::DimPow {
-                                    base: Box::new(expanded_base),
-                                    pow: Box::new(expanded_pow),
-                                    dbg: dbg.clone(),
-                                },
-                                prog,
-                            )),
-                        }
-                    })
-                })
+            (DimExpr::DimPow { base, pow, dbg }, Progress::Full) => {
+                let base_val = base.extract_bigint()?;
+                let pow_val = pow.extract()?;
+                let val = base_val.pow(pow_val);
+                Ok((DimExpr::DimConst { val, dbg }, Progress::Full))
             }
 
-            DimExpr::DimNeg { val, dbg } => {
-                val.expand(env)
-                    .map(|(expanded_val, val_prog)| match (&expanded_val, val_prog) {
-                        (DimExpr::DimConst { val: val_val, .. }, Progress::Full) => (
-                            DimExpr::DimConst {
-                                val: -val_val,
-                                dbg: dbg.clone(),
-                            },
-                            val_prog,
-                        ),
-                        _ => (
-                            DimExpr::DimNeg {
-                                val: Box::new(expanded_val),
-                                dbg: dbg.clone(),
-                            },
-                            val_prog,
-                        ),
-                    })
+            (DimExpr::DimNeg { val, dbg }, Progress::Full) => {
+                let val = val.extract_bigint()?;
+                let val = -val;
+                Ok((DimExpr::DimConst { val, dbg }, Progress::Full))
             }
 
-            DimExpr::DimConst { .. } => Ok((self.clone(), Progress::Full)),
+            (
+                unfinished @ (DimExpr::DimSum { .. }
+                | DimExpr::DimProd { .. }
+                | DimExpr::DimPow { .. }
+                | DimExpr::DimNeg { .. }),
+                Progress::Partial,
+            ) => Ok((unfinished, Progress::Partial)),
+
+            (done @ DimExpr::DimConst { .. }, _) => Ok((done, Progress::Full)),
         }
     }
 }
 
 impl MetaType {
-    pub fn expand(&self, env: &MacroEnv) -> Result<(MetaType, Progress), LowerError> {
-        match self {
-            MetaType::FuncType { in_ty, out_ty } => {
-                in_ty.expand(env).and_then(|(expanded_in_ty, in_ty_prog)| {
-                    out_ty.expand(env).map(|(expanded_out_ty, out_ty_prog)| {
-                        let expanded_func_ty = MetaType::FuncType {
-                            in_ty: Box::new(expanded_in_ty),
-                            out_ty: Box::new(expanded_out_ty),
-                        };
-                        let prog = in_ty_prog.join(out_ty_prog);
-                        (expanded_func_ty, prog)
-                    })
-                })
-            }
-
-            MetaType::RevFuncType { in_out_ty } => {
-                in_out_ty
-                    .expand(env)
-                    .map(|(expanded_in_out_ty, in_out_ty_prog)| {
-                        let expanded_rev_func_ty = MetaType::RevFuncType {
-                            in_out_ty: Box::new(expanded_in_out_ty),
-                        };
-                        (expanded_rev_func_ty, in_out_ty_prog)
-                    })
-            }
-
-            MetaType::RegType { elem_ty, dim } => {
-                dim.expand(env).map(|(expanded_dim, dim_prog)| {
-                    let expanded_reg_ty = MetaType::RegType {
-                        elem_ty: *elem_ty,
-                        dim: expanded_dim,
-                    };
-                    (expanded_reg_ty, dim_prog)
-                })
-            }
-
-            MetaType::TupleType { tys } => tys
-                .iter()
-                .map(|ty| ty.expand(env))
-                .collect::<Result<Vec<_>, LowerError>>()
-                .map(|ty_pairs| {
-                    let (expanded_tys, progs): (Vec<_>, Vec<_>) = ty_pairs.into_iter().unzip();
-                    let expanded_tuple_ty = MetaType::TupleType { tys: expanded_tys };
-                    let prog = progs.into_iter().fold(Progress::identity(), Progress::join);
-                    (expanded_tuple_ty, prog)
-                }),
-
-            MetaType::UnitType => Ok((MetaType::UnitType, Progress::Full)),
-        }
+    pub fn expand(self, env: &MacroEnv) -> Result<(MetaType, Progress), LowerError> {
+        rebuild!(MetaType, self, expand, env)
     }
 }
 
 pub trait Expandable {
-    fn expand(&self, env: &mut MacroEnv) -> Result<(Self, Progress), LowerError>
+    fn expand(self, env: &mut MacroEnv) -> Result<(Self, Progress), LowerError>
     where
         Self: Sized;
 }
 
 impl<S: Expandable> MetaFunctionDef<S> {
-    fn expand(
-        &self,
-        dvs: &DimVarAssignments,
-    ) -> Result<(MetaFunctionDef<S>, Progress), LowerError> {
+    fn expand(self, dvs: &DimVarAssignments) -> Result<(MetaFunctionDef<S>, Progress), LowerError> {
         let MetaFunctionDef {
             name,
             args,
@@ -384,7 +264,7 @@ impl<S: Expandable> MetaFunctionDef<S> {
 
         let mut env = MacroEnv::new(DimVarScope::Func(name.to_string()));
 
-        for dim_var_name in dim_vars {
+        for dim_var_name in &dim_vars {
             let dv = DimVar::FuncVar {
                 var_name: dim_var_name.to_string(),
                 func_name: name.to_string(),
@@ -404,7 +284,7 @@ impl<S: Expandable> MetaFunctionDef<S> {
             }
         }
         let expanded_pairs = body
-            .iter()
+            .into_iter()
             .map(|stmt| stmt.expand(&mut env))
             .collect::<Result<Vec<_>, LowerError>>()?;
         let (expanded_stmts, stmt_progs): (Vec<_>, Vec<_>) = expanded_pairs.into_iter().unzip();
@@ -422,7 +302,7 @@ impl<S: Expandable> MetaFunctionDef<S> {
                     var_name,
                     func_name,
                 } = var
-                    && func_name == name
+                    && func_name == &name
                 {
                     var_name.clone()
                 } else {
@@ -437,9 +317,8 @@ impl<S: Expandable> MetaFunctionDef<S> {
             .collect();
         let old_dim_vars: HashSet<_> = dim_vars.iter().cloned().collect();
         let new_dim_vars: Vec<_> = dim_vars
-            .iter()
-            .chain(env_dim_vars.difference(&old_dim_vars))
-            .cloned()
+            .into_iter()
+            .chain(env_dim_vars.difference(&old_dim_vars).cloned())
             .collect();
 
         let (expanded_ret_ty, ret_ty_prog) = if let Some(ret_ty) = ret_type {
@@ -451,7 +330,7 @@ impl<S: Expandable> MetaFunctionDef<S> {
             (None, Progress::Full)
         };
         let arg_pairs = args
-            .iter()
+            .into_iter()
             .map(|(arg_type, arg_name)| {
                 if let Some(arg_ty) = arg_type {
                     arg_ty.expand(&env).map(|(expanded_arg_ty, arg_ty_prog)| {
@@ -469,13 +348,13 @@ impl<S: Expandable> MetaFunctionDef<S> {
             .fold(Progress::identity(), Progress::join);
 
         let expanded_func_def = MetaFunctionDef {
-            name: name.to_string(),
+            name,
             args: expanded_args,
             ret_type: expanded_ret_ty,
             body: expanded_stmts,
-            is_rev: *is_rev,
+            is_rev,
             dim_vars: new_dim_vars,
-            dbg: dbg.clone(),
+            dbg,
         };
         let progress = stmt_prog.join(ret_ty_prog).join(args_prog);
         Ok((expanded_func_def, progress))
@@ -483,7 +362,7 @@ impl<S: Expandable> MetaFunctionDef<S> {
 }
 
 impl MetaFunc {
-    fn expand(&self, dvs: &DimVarAssignments) -> Result<(MetaFunc, Progress), LowerError> {
+    fn expand(self, dvs: &DimVarAssignments) -> Result<(MetaFunc, Progress), LowerError> {
         match self {
             MetaFunc::Qpu(qpu_func_def) => qpu_func_def
                 .expand(dvs)
@@ -500,12 +379,12 @@ impl MetaProgram {
     /// Try to expand as many metaQwerty constructs in this program, returning
     /// a new one.
     pub fn expand(
-        &self,
+        self,
         dv_assign: &DimVarAssignments,
     ) -> Result<(MetaProgram, Progress), LowerError> {
         let MetaProgram { funcs, dbg } = self;
         let funcs_pairs = funcs
-            .iter()
+            .into_iter()
             .map(|func| func.expand(dv_assign))
             .collect::<Result<Vec<(MetaFunc, Progress)>, LowerError>>()?;
         let (expanded_funcs, progresses): (Vec<_>, Vec<_>) = funcs_pairs.into_iter().unzip();
@@ -516,7 +395,7 @@ impl MetaProgram {
         Ok((
             MetaProgram {
                 funcs: expanded_funcs,
-                dbg: dbg.clone(),
+                dbg,
             },
             progress,
         ))

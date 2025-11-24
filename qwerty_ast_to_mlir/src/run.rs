@@ -32,7 +32,7 @@ fn run_qiree(
         target: Target::Qir(QirProfile::Base),
         dump: debug,
     };
-    let mlir_module = compile_meta_ast(prog, func_name, &cfg)?;
+    let mlir_module = compile_meta_ast(prog.clone(), func_name, &cfg)?;
     let llvm_module = translate_to_llvm_ir(mlir_module, debug)?;
     backend::qiree::run_llvm_module(llvm_module, func_name, acc, num_shots)
         .map_err(|qiree_err| CompileError::Message(format!("QIR-EE error: {}", qiree_err), None))
@@ -65,7 +65,7 @@ pub fn run_meta_ast(
                 target: Target::Qir(QirProfile::Unrestricted),
                 dump: debug,
             };
-            let module = compile_meta_ast(prog, func_name, &cfg)?;
+            let module = compile_meta_ast(prog.clone(), func_name, &cfg)?;
             Ok(backend::qir_runner::run_mlir_module(
                 module, func_name, num_shots,
             ))

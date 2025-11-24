@@ -165,6 +165,7 @@ pub struct TypeError {
 pub enum LowerErrorKind {
     // TODO: add more details
     NotFullyFolded,
+    // TODO: remove Malformed
     Malformed,
     IntegerTooBig {
         offender: IBig,
@@ -190,6 +191,44 @@ pub enum LowerErrorKind {
     CannotInstantiate {
         func_name: String,
     },
+    DuplicateQubitSymbolDef {
+        sym: char,
+    },
+    DuplicateBasisAliasDef {
+        alias_name: String,
+    },
+    DuplicateBasisAliasRecDef {
+        alias_name: String,
+    },
+    DuplicateMacroDef {
+        macro_name: String,
+    },
+    UndefinedMacro {
+        macro_name: String,
+    },
+    UndefinedAlias {
+        alias_name: String,
+    },
+    UndefinedQubitSymbol {
+        sym: char,
+    },
+    IllegalQubitSymbolInQubitLiteral,
+    WrongMacroKind {
+        macro_name: String,
+    },
+    WrongAliasKind {
+        alias_name: String,
+    },
+    MissingAliasRecursiveStep {
+        alias_name: String,
+    },
+    MacroDoesNotMatch {
+        macro_name: String,
+    },
+    ModNotPowerOf2 {
+        bad_divisor: usize,
+    },
+    InvalidEmbedOperand,
 }
 
 impl fmt::Display for LowerErrorKind {
@@ -267,6 +306,60 @@ impl fmt::Display for LowerErrorKind {
             }
             LowerErrorKind::CannotInstantiate { func_name } => {
                 write!(f, "Cannot instantiate function {}", func_name)
+            }
+            LowerErrorKind::DuplicateQubitSymbolDef { sym } => {
+                write!(f, "Qubit symbol {} is already defined", sym)
+            }
+            LowerErrorKind::DuplicateBasisAliasDef { alias_name } => {
+                write!(f, "Basis alias {} is already defined", alias_name)
+            }
+            LowerErrorKind::DuplicateBasisAliasRecDef { alias_name } => {
+                write!(
+                    f,
+                    "Recursive step of recursive basis alias {} is already defined",
+                    alias_name
+                )
+            }
+            LowerErrorKind::DuplicateMacroDef { macro_name } => {
+                write!(f, "Macro {} is already defined", macro_name)
+            }
+            LowerErrorKind::UndefinedMacro { macro_name } => {
+                write!(f, "Macro {} is not defined", macro_name)
+            }
+            LowerErrorKind::UndefinedAlias { alias_name } => {
+                write!(f, "Alias {} is not defined", alias_name)
+            }
+            LowerErrorKind::UndefinedQubitSymbol { sym } => {
+                write!(f, "Qubit symbol {} is not defined", sym)
+            }
+            LowerErrorKind::IllegalQubitSymbolInQubitLiteral => {
+                write!(f, "Illegal qubit symbol in qubit literal")
+            }
+            LowerErrorKind::WrongMacroKind { macro_name } => {
+                write!(f, "Macro {} is the wrong kind", macro_name)
+            }
+            LowerErrorKind::WrongAliasKind { alias_name } => {
+                write!(f, "Alias {} is the wrong kind", alias_name)
+            }
+            LowerErrorKind::MissingAliasRecursiveStep { alias_name } => {
+                write!(
+                    f,
+                    "Recursive alias {} is missing the recursive step",
+                    alias_name
+                )
+            }
+            LowerErrorKind::MacroDoesNotMatch { macro_name } => {
+                write!(f, "Macro {} does not match input", macro_name)
+            }
+            LowerErrorKind::ModNotPowerOf2 { bad_divisor } => {
+                write!(
+                    f,
+                    "Modulus divisor must be a power of 2, not {}",
+                    bad_divisor
+                )
+            }
+            LowerErrorKind::InvalidEmbedOperand => {
+                write!(f, "Embed operand must be the name of a classical function")
             }
         }
     }

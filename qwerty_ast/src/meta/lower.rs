@@ -7,9 +7,11 @@ use crate::{
         expand::{Expandable, MacroEnv},
         infer::DimVarAssignments,
         qpu,
+        type_dim::meta_type,
     },
     typecheck,
 };
+use qwerty_ast_macros::rebuild;
 use std::collections::HashMap;
 
 /// Allows expansion/inference to report on whether it is completed yet.
@@ -44,315 +46,69 @@ impl Progress {
 }
 
 impl MetaType {
-    pub fn substitute_dim_var(&self, dim_var: DimVar, new_dim_expr: DimExpr) -> MetaType {
-        match self {
-            MetaType::FuncType { in_ty, out_ty } => MetaType::FuncType {
-                in_ty: Box::new(in_ty.substitute_dim_var(dim_var.clone(), new_dim_expr.clone())),
-                out_ty: Box::new(out_ty.substitute_dim_var(dim_var, new_dim_expr)),
-            },
-
-            MetaType::RevFuncType { in_out_ty } => MetaType::RevFuncType {
-                in_out_ty: Box::new(in_out_ty.substitute_dim_var(dim_var, new_dim_expr)),
-            },
-
-            MetaType::RegType { elem_ty, dim } => MetaType::RegType {
-                elem_ty: *elem_ty,
-                dim: dim.substitute_dim_var(dim_var, new_dim_expr),
-            },
-
-            MetaType::TupleType { tys } => {
-                let new_tys = tys
-                    .iter()
-                    .map(|ty| ty.substitute_dim_var(dim_var.clone(), new_dim_expr.clone()))
-                    .collect();
-                MetaType::TupleType { tys: new_tys }
-            }
-
-            // Doesn't contain a dimvar expr
-            MetaType::UnitType => MetaType::UnitType,
-        }
+    pub fn substitute_dim_var(self, dim_var: &DimVar, new_dim_expr: &DimExpr) -> Self {
+        rebuild!(MetaType, self, substitute_dim_var, dim_var, new_dim_expr)
     }
 }
 
 impl classical::MetaExpr {
-    pub fn substitute_dim_var(
-        &self,
-        dim_var: DimVar,
-        new_dim_expr: DimExpr,
-    ) -> classical::MetaExpr {
-        match self {
-            classical::MetaExpr::Mod {
-                dividend,
-                divisor,
-                dbg,
-            } => classical::MetaExpr::Mod {
-                dividend: Box::new(
-                    dividend.substitute_dim_var(dim_var.clone(), new_dim_expr.clone()),
-                ),
-                divisor: divisor.substitute_dim_var(dim_var, new_dim_expr),
-                dbg: dbg.clone(),
-            },
-
-            classical::MetaExpr::Slice {
-                val,
-                lower,
-                upper: upper_opt,
-                dbg,
-            } => classical::MetaExpr::Slice {
-                val: Box::new(val.substitute_dim_var(dim_var.clone(), new_dim_expr.clone())),
-                lower: lower.substitute_dim_var(dim_var.clone(), new_dim_expr.clone()),
-                upper: upper_opt
-                    .as_ref()
-                    .map(|upper| upper.substitute_dim_var(dim_var, new_dim_expr)),
-                dbg: dbg.clone(),
-            },
-
-            classical::MetaExpr::UnaryOp { kind, val, dbg } => classical::MetaExpr::UnaryOp {
-                kind: *kind,
-                val: Box::new(val.substitute_dim_var(dim_var, new_dim_expr)),
-                dbg: dbg.clone(),
-            },
-
-            classical::MetaExpr::BinaryOp {
-                kind,
-                left,
-                right,
-                dbg,
-            } => classical::MetaExpr::BinaryOp {
-                kind: *kind,
-                left: Box::new(left.substitute_dim_var(dim_var.clone(), new_dim_expr.clone())),
-                right: Box::new(right.substitute_dim_var(dim_var, new_dim_expr)),
-                dbg: dbg.clone(),
-            },
-
-            classical::MetaExpr::ReduceOp { kind, val, dbg } => classical::MetaExpr::ReduceOp {
-                kind: *kind,
-                val: Box::new(val.substitute_dim_var(dim_var, new_dim_expr)),
-                dbg: dbg.clone(),
-            },
-
-            classical::MetaExpr::ModMul {
-                x,
-                j,
-                y,
-                mod_n,
-                dbg,
-            } => classical::MetaExpr::ModMul {
-                x: x.substitute_dim_var(dim_var.clone(), new_dim_expr.clone()),
-                j: j.substitute_dim_var(dim_var.clone(), new_dim_expr.clone()),
-                y: Box::new(y.substitute_dim_var(dim_var.clone(), new_dim_expr.clone())),
-                mod_n: mod_n.substitute_dim_var(dim_var.clone(), new_dim_expr.clone()),
-                dbg: dbg.clone(),
-            },
-
-            classical::MetaExpr::Repeat { val, amt, dbg } => classical::MetaExpr::Repeat {
-                val: Box::new(val.substitute_dim_var(dim_var.clone(), new_dim_expr.clone())),
-                amt: amt.substitute_dim_var(dim_var.clone(), new_dim_expr.clone()),
-                dbg: dbg.clone(),
-            },
-
-            classical::MetaExpr::Concat { left, right, dbg } => classical::MetaExpr::Concat {
-                left: Box::new(left.substitute_dim_var(dim_var.clone(), new_dim_expr.clone())),
-                right: Box::new(right.substitute_dim_var(dim_var.clone(), new_dim_expr.clone())),
-                dbg: dbg.clone(),
-            },
-
-            classical::MetaExpr::BitLiteral { val, n_bits, dbg } => {
-                classical::MetaExpr::BitLiteral {
-                    val: val.clone(),
-                    n_bits: n_bits.substitute_dim_var(dim_var, new_dim_expr),
-                    dbg: dbg.clone(),
-                }
-            }
-
-            // Doesn't contain an expr/dimvar expr
-            classical::MetaExpr::Variable { .. } => self.clone(),
-        }
+    pub fn substitute_dim_var(self, dim_var: &DimVar, new_dim_expr: &DimExpr) -> Self {
+        rebuild!(
+            classical::MetaExpr,
+            self,
+            substitute_dim_var,
+            dim_var,
+            new_dim_expr
+        )
     }
 }
 
 impl qpu::MetaExpr {
-    fn expand_instantiations<F>(&self, mut f: F) -> Result<(qpu::MetaExpr, F), LowerError>
+    /// Called by the `gen_rebuild` attribute macro invoked in `meta/qpu.rs`.
+    pub(crate) fn expand_instantiations_rewriter<F>(self, mut f: F) -> Result<(Self, F), LowerError>
     where
         F: FnMut(String, DimExpr, Option<DebugLoc>) -> Result<String, LowerError>,
     {
-        Ok(match self {
-            qpu::MetaExpr::ExprMacro { name, arg, dbg } => {
-                let (new_arg, moved_cb) = arg.expand_instantiations(f)?;
-                (
-                    qpu::MetaExpr::ExprMacro {
-                        name: name.to_string(),
-                        arg: Box::new(new_arg),
-                        dbg: dbg.clone(),
-                    },
-                    moved_cb,
-                )
-            }
-
-            qpu::MetaExpr::BroadcastTensor { val, factor, dbg } => {
-                let (new_val, moved_cb) = val.expand_instantiations(f)?;
-                (
-                    qpu::MetaExpr::BroadcastTensor {
-                        val: Box::new(new_val),
-                        factor: factor.clone(),
-                        dbg: dbg.clone(),
-                    },
-                    moved_cb,
-                )
-            }
-
-            qpu::MetaExpr::Instantiate { name, param, dbg } => (
+        match self {
+            qpu::MetaExpr::Instantiate { name, param, dbg } => Ok((
                 qpu::MetaExpr::Variable {
-                    name: f(name.to_string(), param.clone(), dbg.clone())?,
-                    dbg: dbg.clone(),
+                    name: f(name, param, dbg.clone())?,
+                    dbg: dbg,
                 },
                 f,
-            ),
+            )),
 
-            qpu::MetaExpr::Repeat {
-                for_each,
-                iter_var,
-                upper_bound,
-                dbg,
-            } => {
-                let (new_for_each, moved_cb) = for_each.expand_instantiations(f)?;
-                (
-                    qpu::MetaExpr::Repeat {
-                        for_each: Box::new(new_for_each),
-                        iter_var: iter_var.to_string(),
-                        upper_bound: upper_bound.clone(),
-                        dbg: dbg.clone(),
-                    },
-                    moved_cb,
-                )
-            }
+            other => Ok((other, f)),
+        }
+    }
 
-            qpu::MetaExpr::EmbedClassical {
-                func,
-                embed_kind,
-                dbg,
-            } => {
-                let (new_func, moved_cb) = func.expand_instantiations(f)?;
-                (
-                    qpu::MetaExpr::EmbedClassical {
-                        func: Box::new(new_func),
-                        embed_kind: *embed_kind,
-                        dbg: dbg.clone(),
-                    },
-                    moved_cb,
-                )
-            }
-
-            qpu::MetaExpr::Adjoint { func, dbg } => {
-                let (new_func, moved_cb) = func.expand_instantiations(f)?;
-                (
-                    qpu::MetaExpr::Adjoint {
-                        func: Box::new(new_func),
-                        dbg: dbg.clone(),
-                    },
-                    moved_cb,
-                )
-            }
-
-            qpu::MetaExpr::Pipe { lhs, rhs, dbg } => {
-                let (new_lhs, moved_cb) = lhs.expand_instantiations(f)?;
-                let (new_rhs, moved_cb) = rhs.expand_instantiations(moved_cb)?;
-                (
-                    qpu::MetaExpr::Pipe {
-                        lhs: Box::new(new_lhs),
-                        rhs: Box::new(new_rhs),
-                        dbg: dbg.clone(),
-                    },
-                    moved_cb,
-                )
-            }
-
-            qpu::MetaExpr::BiTensor { left, right, dbg } => {
-                let (new_left, moved_cb) = left.expand_instantiations(f)?;
-                let (new_right, moved_cb) = right.expand_instantiations(moved_cb)?;
-                (
-                    qpu::MetaExpr::BiTensor {
-                        left: Box::new(new_left),
-                        right: Box::new(new_right),
-                        dbg: dbg.clone(),
-                    },
-                    moved_cb,
-                )
-            }
-
-            qpu::MetaExpr::Predicated {
-                then_func,
-                else_func,
-                pred,
-                dbg,
-            } => {
-                let (new_then_func, moved_cb) = then_func.expand_instantiations(f)?;
-                let (new_else_func, moved_cb) = else_func.expand_instantiations(moved_cb)?;
-                (
-                    qpu::MetaExpr::Predicated {
-                        then_func: Box::new(new_then_func),
-                        else_func: Box::new(new_else_func),
-                        pred: pred.clone(),
-                        dbg: dbg.clone(),
-                    },
-                    moved_cb,
-                )
-            }
-
-            qpu::MetaExpr::Conditional {
-                then_expr,
-                else_expr,
-                cond,
-                dbg,
-            } => {
-                let (new_then_expr, moved_cb) = then_expr.expand_instantiations(f)?;
-                let (new_else_expr, moved_cb) = else_expr.expand_instantiations(moved_cb)?;
-                let (new_cond, moved_cb) = cond.expand_instantiations(moved_cb)?;
-                (
-                    qpu::MetaExpr::Conditional {
-                        then_expr: Box::new(new_then_expr),
-                        else_expr: Box::new(new_else_expr),
-                        cond: Box::new(new_cond),
-                        dbg: dbg.clone(),
-                    },
-                    moved_cb,
-                )
-            }
-
-            // Doesn't contain an expression
-            qpu::MetaExpr::BasisMacro { .. }
-            | qpu::MetaExpr::Variable { .. }
-            | qpu::MetaExpr::UnitLiteral { .. }
-            | qpu::MetaExpr::Measure { .. }
-            | qpu::MetaExpr::Discard { .. }
-            | qpu::MetaExpr::BasisTranslation { .. }
-            | qpu::MetaExpr::NonUniformSuperpos { .. }
-            | qpu::MetaExpr::Ensemble { .. }
-            | qpu::MetaExpr::QLit { .. }
-            | qpu::MetaExpr::BitLiteral { .. } => (self.clone(), f),
-        })
+    pub fn expand_instantiations<F>(self, f: F) -> Result<(Self, F), LowerError>
+    where
+        F: FnMut(String, DimExpr, Option<DebugLoc>) -> Result<String, LowerError>,
+    {
+        rebuild!(qpu::MetaExpr, self, expand_instantiations, f)
     }
 }
 
 pub trait InstantationExpandable {
-    fn expand_instantiations<F>(&self, f: F) -> Result<(Self, F), LowerError>
+    fn expand_instantiations<F>(self, f: F) -> Result<(Self, F), LowerError>
     where
         F: FnMut(String, DimExpr, Option<DebugLoc>) -> Result<String, LowerError>,
         Self: Sized;
 }
 
 impl InstantationExpandable for classical::MetaStmt {
-    fn expand_instantiations<F>(&self, f: F) -> Result<(classical::MetaStmt, F), LowerError>
+    fn expand_instantiations<F>(self, f: F) -> Result<(classical::MetaStmt, F), LowerError>
     where
         F: FnMut(String, DimExpr, Option<DebugLoc>) -> Result<String, LowerError>,
     {
         // @classical kernels don't have an instantiation expression
-        Ok((self.clone(), f))
+        Ok((self, f))
     }
 }
 
 impl InstantationExpandable for qpu::MetaStmt {
-    fn expand_instantiations<F>(&self, f: F) -> Result<(qpu::MetaStmt, F), LowerError>
+    fn expand_instantiations<F>(self, f: F) -> Result<(qpu::MetaStmt, F), LowerError>
     where
         F: FnMut(String, DimExpr, Option<DebugLoc>) -> Result<String, LowerError>,
     {
@@ -438,7 +194,7 @@ impl InstantationExpandable for qpu::MetaStmt {
 }
 
 impl<S: InstantationExpandable> MetaFunctionDef<S> {
-    fn expand_instantiations<F>(&self, f: F) -> Result<(MetaFunctionDef<S>, F), LowerError>
+    fn expand_instantiations<F>(self, f: F) -> Result<(MetaFunctionDef<S>, F), LowerError>
     where
         F: FnMut(String, DimExpr, Option<DebugLoc>) -> Result<String, LowerError>,
     {
@@ -462,13 +218,13 @@ impl<S: InstantationExpandable> MetaFunctionDef<S> {
 
         Ok((
             MetaFunctionDef {
-                name: name.to_string(),
-                args: args.clone(),
-                ret_type: ret_type.clone(),
+                name: name,
+                args: args,
+                ret_type: ret_type,
                 body: new_body,
-                is_rev: *is_rev,
-                dim_vars: dim_vars.clone(),
-                dbg: dbg.clone(),
+                is_rev: is_rev,
+                dim_vars: dim_vars,
+                dbg: dbg,
             },
             next_callback,
         ))
@@ -476,116 +232,36 @@ impl<S: InstantationExpandable> MetaFunctionDef<S> {
 }
 
 pub trait Substitutable {
-    fn substitute_dim_var(&self, dim_var: DimVar, new_dim_expr: DimExpr) -> Self;
+    fn substitute_dim_var(self, dim_var: &DimVar, new_dim_expr: &DimExpr) -> Self;
 }
 
 impl Substitutable for classical::MetaStmt {
-    fn substitute_dim_var(&self, dim_var: DimVar, new_dim_expr: DimExpr) -> classical::MetaStmt {
-        match self {
-            classical::MetaStmt::Expr { expr } => classical::MetaStmt::Expr {
-                expr: expr.substitute_dim_var(dim_var, new_dim_expr),
-            },
-            classical::MetaStmt::Assign { lhs, rhs, dbg } => classical::MetaStmt::Assign {
-                lhs: lhs.to_string(),
-                rhs: rhs.substitute_dim_var(dim_var, new_dim_expr),
-                dbg: dbg.clone(),
-            },
-            classical::MetaStmt::UnpackAssign { lhs, rhs, dbg } => {
-                classical::MetaStmt::UnpackAssign {
-                    lhs: lhs.clone(),
-                    rhs: rhs.substitute_dim_var(dim_var, new_dim_expr),
-                    dbg: dbg.clone(),
-                }
-            }
-            classical::MetaStmt::Return { val, dbg } => classical::MetaStmt::Return {
-                val: val.substitute_dim_var(dim_var, new_dim_expr),
-                dbg: dbg.clone(),
-            },
-        }
+    fn substitute_dim_var(self, dim_var: &DimVar, new_dim_expr: &DimExpr) -> Self {
+        rebuild!(
+            classical::MetaStmt,
+            self,
+            substitute_dim_var,
+            dim_var,
+            new_dim_expr
+        )
     }
 }
 
 impl Substitutable for qpu::MetaStmt {
-    fn substitute_dim_var(&self, dim_var: DimVar, new_dim_expr: DimExpr) -> qpu::MetaStmt {
-        match self {
-            qpu::MetaStmt::ExprMacroDef {
-                lhs_pat,
-                lhs_name,
-                rhs,
-                dbg,
-            } => qpu::MetaStmt::ExprMacroDef {
-                lhs_pat: lhs_pat.clone(),
-                lhs_name: lhs_name.to_string(),
-                rhs: rhs.substitute_dim_var(dim_var, new_dim_expr),
-                dbg: dbg.clone(),
-            },
-            qpu::MetaStmt::BasisMacroDef {
-                lhs_pat,
-                lhs_name,
-                rhs,
-                dbg,
-            } => qpu::MetaStmt::BasisMacroDef {
-                lhs_pat: lhs_pat.clone(),
-                lhs_name: lhs_name.to_string(),
-                rhs: rhs.substitute_dim_var(dim_var, new_dim_expr),
-                dbg: dbg.clone(),
-            },
-            qpu::MetaStmt::BasisGeneratorMacroDef {
-                lhs_pat,
-                lhs_name,
-                rhs,
-                dbg,
-            } => qpu::MetaStmt::BasisGeneratorMacroDef {
-                lhs_pat: lhs_pat.clone(),
-                lhs_name: lhs_name.to_string(),
-                rhs: rhs.substitute_dim_var(dim_var, new_dim_expr),
-                dbg: dbg.clone(),
-            },
-            qpu::MetaStmt::VectorSymbolDef { lhs, rhs, dbg } => qpu::MetaStmt::VectorSymbolDef {
-                lhs: *lhs,
-                rhs: rhs.substitute_dim_var(dim_var, new_dim_expr),
-                dbg: dbg.clone(),
-            },
-            qpu::MetaStmt::BasisAliasDef { lhs, rhs, dbg } => qpu::MetaStmt::BasisAliasDef {
-                lhs: lhs.to_string(),
-                rhs: rhs.substitute_dim_var(dim_var, new_dim_expr),
-                dbg: dbg.clone(),
-            },
-            qpu::MetaStmt::BasisAliasRecDef {
-                lhs,
-                param,
-                rhs,
-                dbg,
-            } => qpu::MetaStmt::BasisAliasRecDef {
-                lhs: lhs.to_string(),
-                param: param.clone(),
-                rhs: rhs.substitute_dim_var(dim_var, new_dim_expr),
-                dbg: dbg.clone(),
-            },
-            qpu::MetaStmt::Expr { expr } => qpu::MetaStmt::Expr {
-                expr: expr.substitute_dim_var(dim_var, new_dim_expr),
-            },
-            qpu::MetaStmt::Assign { lhs, rhs, dbg } => qpu::MetaStmt::Assign {
-                lhs: lhs.to_string(),
-                rhs: rhs.substitute_dim_var(dim_var, new_dim_expr),
-                dbg: dbg.clone(),
-            },
-            qpu::MetaStmt::UnpackAssign { lhs, rhs, dbg } => qpu::MetaStmt::UnpackAssign {
-                lhs: lhs.clone(),
-                rhs: rhs.substitute_dim_var(dim_var, new_dim_expr),
-                dbg: dbg.clone(),
-            },
-            qpu::MetaStmt::Return { val, dbg } => qpu::MetaStmt::Return {
-                val: val.substitute_dim_var(dim_var, new_dim_expr),
-                dbg: dbg.clone(),
-            },
-        }
+    fn substitute_dim_var(self, dim_var: &DimVar, new_dim_expr: &DimExpr) -> Self {
+        rebuild!(
+            qpu::MetaStmt,
+            self,
+            substitute_dim_var,
+            dim_var,
+            new_dim_expr
+        )
     }
 }
 
 impl<S: Substitutable> MetaFunctionDef<S> {
     fn instantiate(
-        &self,
+        self,
         new_name: String,
         dim_var_name: String,
         new_dim_expr: DimExpr,
@@ -602,46 +278,42 @@ impl<S: Substitutable> MetaFunctionDef<S> {
 
         let dv = DimVar::FuncVar {
             var_name: dim_var_name.to_string(),
-            func_name: name.to_string(),
+            func_name: name,
         };
 
         let new_args: Vec<_> = args
-            .iter()
+            .into_iter()
             .map(|(arg_ty, arg_name)| {
-                let new_arg_ty = arg_ty
-                    .clone()
-                    .map(|ty| ty.substitute_dim_var(dv.clone(), new_dim_expr.clone()));
-                (new_arg_ty, arg_name.to_string())
+                let new_arg_ty = arg_ty.map(|ty| ty.substitute_dim_var(&dv, &new_dim_expr));
+                (new_arg_ty, arg_name)
             })
             .collect();
-        let new_ret_type = ret_type
-            .clone()
-            .map(|ty| ty.substitute_dim_var(dv.clone(), new_dim_expr.clone()));
+        let new_ret_type = ret_type.map(|ty| ty.substitute_dim_var(&dv, &new_dim_expr));
         let new_body: Vec<_> = body
-            .iter()
-            .map(|stmt| stmt.substitute_dim_var(dv.clone(), new_dim_expr.clone()))
+            .into_iter()
+            .map(|stmt| stmt.substitute_dim_var(&dv, &new_dim_expr))
             .collect();
+        let expected_num_dim_vars = dim_vars.len();
         let new_dim_vars: Vec<_> = dim_vars
-            .iter()
-            .filter(|name| **name != dim_var_name)
-            .cloned()
+            .into_iter()
+            .filter(|name| *name != dim_var_name)
             .collect();
-        assert_eq!(new_dim_vars.len() + 1, dim_vars.len());
+        assert_eq!(new_dim_vars.len() + 1, expected_num_dim_vars);
 
         MetaFunctionDef {
             name: new_name,
             args: new_args,
             ret_type: new_ret_type,
             body: new_body,
-            is_rev: *is_rev,
+            is_rev,
             dim_vars: new_dim_vars,
-            dbg: dbg.clone(),
+            dbg,
         }
     }
 }
 
 impl MetaFunc {
-    fn instantiate(&self, new_name: String, dim_var_name: String, new_expr: DimExpr) -> MetaFunc {
+    fn instantiate(self, new_name: String, dim_var_name: String, new_expr: DimExpr) -> MetaFunc {
         match self {
             MetaFunc::Qpu(qpu_func) => {
                 MetaFunc::Qpu(qpu_func.instantiate(new_name, dim_var_name, new_expr))
@@ -652,7 +324,7 @@ impl MetaFunc {
         }
     }
 
-    fn expand_instantiations<F>(&self, f: F) -> Result<(MetaFunc, F), LowerError>
+    fn expand_instantiations<F>(self, f: F) -> Result<(MetaFunc, F), LowerError>
     where
         F: FnMut(String, DimExpr, Option<DebugLoc>) -> Result<String, LowerError>,
     {
@@ -697,7 +369,7 @@ impl MetaProgram {
     }
 
     fn do_instantiations(
-        &self,
+        self,
         old_dv_assign: DimVarAssignments,
     ) -> Result<(MetaProgram, DimVarAssignments), LowerError> {
         let candidates = self
@@ -735,7 +407,7 @@ impl MetaProgram {
             if let Some(instances) = funcs_instantiated.get(func.get_name()) {
                 let mut instance_names = vec![];
                 for (instance_name, missing_dv, param_val) in instances {
-                    let instance = func.instantiate(
+                    let instance = func.clone().instantiate(
                         instance_name.to_string(),
                         missing_dv.to_string(),
                         param_val.clone(),
@@ -794,7 +466,7 @@ impl MetaProgram {
     }
 
     fn round_of_lowering(
-        &self,
+        self,
         init_dv_assign: DimVarAssignments,
     ) -> Result<(MetaProgram, DimVarAssignments, Progress), LowerError> {
         let mut dv_assign = init_dv_assign;
@@ -815,7 +487,8 @@ impl MetaProgram {
         }
     }
 
-    pub fn lower(&self) -> Result<ast::Program, LowerError> {
+    pub fn lower(self) -> Result<ast::Program, LowerError> {
+        let dbg = self.dbg.clone();
         let init_dv_assign = DimVarAssignments::empty();
         let (new_prog, dv_assign, _progress) = self.round_of_lowering(init_dv_assign)?;
         let (new_prog, dv_assign) = new_prog.do_instantiations(dv_assign)?;
@@ -831,7 +504,7 @@ impl MetaProgram {
         } else if !progress.is_finished() {
             Err(LowerError {
                 kind: LowerErrorKind::Stuck,
-                dbg: self.dbg.clone(),
+                dbg,
             })
         } else {
             new_prog.extract()
@@ -841,7 +514,7 @@ impl MetaProgram {
 
 impl qpu::MetaStmt {
     pub fn lower(
-        &self,
+        self,
         init_env: &mut MacroEnv,
         plain_ty_env: &typecheck::TypeEnv,
     ) -> Result<ast::Stmt<ast::qpu::Expr>, LowerError> {
@@ -852,9 +525,10 @@ impl qpu::MetaStmt {
             let new_dv_assign = stmt.infer(dv_assign, plain_ty_env)?;
             let mut env = init_env.clone();
             env.update_from_dv_assign(&new_dv_assign)?;
-            let (new_stmt, expand_progress) = stmt.expand(&mut env)?;
+            let old_stmt = stmt;
+            let (new_stmt, expand_progress) = old_stmt.clone().expand(&mut env)?;
 
-            if expand_progress.is_finished() || stmt == new_stmt {
+            if expand_progress.is_finished() || old_stmt == new_stmt {
                 // Use init_env as an output parameter
                 *init_env = env;
                 break new_stmt.extract();

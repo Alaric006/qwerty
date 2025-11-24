@@ -159,6 +159,24 @@ pub enum Expr {
     BitLiteral(BitLiteral),
 }
 
+impl Expr {
+    /// Returns the debug location for this expression.
+    pub fn get_dbg(&self) -> Option<DebugLoc> {
+        let (Expr::Variable(Variable { dbg, .. })
+        | Expr::Slice(Slice { dbg, .. })
+        | Expr::UnaryOp(UnaryOp { dbg, .. })
+        | Expr::BinaryOp(BinaryOp { dbg, .. })
+        | Expr::ReduceOp(ReduceOp { dbg, .. })
+        | Expr::RotateOp(RotateOp { dbg, .. })
+        | Expr::Concat(Concat { dbg, .. })
+        | Expr::Repeat(Repeat { dbg, .. })
+        | Expr::ModMul(ModMul { dbg, .. })
+        | Expr::BitLiteral(BitLiteral { dbg, .. })) = self;
+
+        dbg.clone()
+    }
+}
+
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

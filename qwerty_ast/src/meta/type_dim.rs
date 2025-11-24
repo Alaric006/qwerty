@@ -2,8 +2,10 @@ use crate::{
     ast::{self, RegKind},
     dbg::DebugLoc,
     error::{LowerError, LowerErrorKind},
+    meta::{MacroEnv, Progress},
 };
 use dashu::{base::Signed, integer::IBig};
+use qwerty_ast_macros::{gen_rebuild, rebuild, rewrite_match, rewrite_ty};
 use std::fmt;
 
 /// A dimension variable. The distinction between the two variants exists
@@ -51,6 +53,18 @@ impl fmt::Display for DimVar {
     }
 }
 
+#[gen_rebuild {
+    substitute_dim_var(
+        rewrite(substitute_dim_var_rewriter),
+        more_copied_args(dim_var: &DimVar, new_dim_expr: &DimExpr),
+    ),
+    expand(
+        rewrite(expand_rewriter),
+        progress(Progress),
+        more_copied_args(env: &MacroEnv),
+        result_err(LowerError),
+    ),
+}]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DimExpr {
     /// Dimension variable. Example syntax:
@@ -282,27 +296,11 @@ impl DimExpr {
         }
     }
 
-    /// Extract a constant integer from this dimension variable expression or
+    /// Extract an [`IBig`] from this dimension variable expression or
     /// return an error if it is not fully folded yet.
-    pub fn extract(&self) -> Result<usize, LowerError> {
+    pub fn extract_bigint(self) -> Result<IBig, LowerError> {
         match self {
-            DimExpr::DimConst { val, dbg } => {
-                if val.is_negative() {
-                    Err(LowerError {
-                        kind: LowerErrorKind::NegativeInteger {
-                            offender: val.clone(),
-                        },
-                        dbg: dbg.clone(),
-                    })
-                } else {
-                    val.try_into().map_err(|_err| LowerError {
-                        kind: LowerErrorKind::IntegerTooBig {
-                            offender: val.clone(),
-                        },
-                        dbg: dbg.clone(),
-                    })
-                }
-            }
+            DimExpr::DimConst { val, dbg: _ } => Ok(val),
             DimExpr::DimVar { dbg, .. }
             | DimExpr::DimSum { dbg, .. }
             | DimExpr::DimProd { dbg, .. }
@@ -311,6 +309,36 @@ impl DimExpr {
                 kind: LowerErrorKind::NotFullyFolded,
                 dbg: dbg.clone(),
             }),
+        }
+    }
+
+    pub fn get_dbg(&self) -> Option<DebugLoc> {
+        let (DimExpr::DimConst { dbg, .. }
+        | DimExpr::DimVar { dbg, .. }
+        | DimExpr::DimSum { dbg, .. }
+        | DimExpr::DimProd { dbg, .. }
+        | DimExpr::DimPow { dbg, .. }
+        | DimExpr::DimNeg { dbg, .. }) = self;
+        dbg.clone()
+    }
+
+    /// Extract a constant integer from this dimension variable expression or
+    /// return an error if it is not fully folded yet.
+    pub fn extract(self) -> Result<usize, LowerError> {
+        let dbg = self.get_dbg();
+        let val = self.extract_bigint()?;
+        if val.is_negative() {
+            Err(LowerError {
+                kind: LowerErrorKind::NegativeInteger {
+                    offender: val.clone(),
+                },
+                dbg,
+            })
+        } else {
+            val.clone().try_into().map_err(|_err| LowerError {
+                kind: LowerErrorKind::IntegerTooBig { offender: val },
+                dbg,
+            })
         }
     }
 }
@@ -330,6 +358,27 @@ impl fmt::Display for DimExpr {
     }
 }
 
+#[gen_rebuild {
+    substitute_dim_var(
+        more_copied_args(dim_var: &DimVar, new_dim_expr: &DimExpr),
+        recurse_attrs,
+    ),
+    expand(
+        progress(Progress),
+        more_copied_args(env: &MacroEnv),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+    extract(
+        rewrite(extract_rewriter),
+        rewrite_to(
+            MetaType => ast::Type,
+            DimExpr => usize,
+        ),
+        result_err(LowerError),
+        recurse_attrs,
+    ),
+}]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MetaType {
     FuncType {
@@ -340,6 +389,7 @@ pub enum MetaType {
         in_out_ty: Box<MetaType>,
     },
     RegType {
+        #[gen_rebuild::skip_recurse]
         elem_ty: RegKind,
         dim: DimExpr,
     },
@@ -352,32 +402,33 @@ pub enum MetaType {
 impl MetaType {
     /// Extract an [`ast::Type`] from this MetaQwerty type or return an error
     /// if contained dimension variable expressions are not fully folded yet.
-    pub fn extract(&self) -> Result<ast::Type, LowerError> {
-        match self {
-            MetaType::FuncType { in_ty, out_ty } => in_ty.extract().and_then(|in_ast_ty| {
-                out_ty.extract().map(|out_ast_ty| ast::Type::FuncType {
-                    in_ty: Box::new(in_ast_ty),
-                    out_ty: Box::new(out_ast_ty),
-                })
-            }),
-            MetaType::RevFuncType { in_out_ty } => {
-                in_out_ty
-                    .extract()
-                    .map(|in_out_ast_ty| ast::Type::RevFuncType {
-                        in_out_ty: Box::new(in_out_ast_ty),
-                    })
+    pub fn extract(self) -> Result<ast::Type, LowerError> {
+        rebuild!(MetaType, self, extract)
+    }
+
+    pub(crate) fn extract_rewriter(
+        rewritten: rewrite_ty!(MetaType, extract),
+    ) -> Result<ast::Type, LowerError> {
+        Ok(rewrite_match! {MetaType, extract, rewritten,
+            FuncType { in_ty, out_ty } => {
+                ast::Type::FuncType {
+                    in_ty: Box::new(in_ty),
+                    out_ty: Box::new(out_ty),
+                }
             }
-            MetaType::RegType { elem_ty, dim } => dim.extract().map(|dim_val| ast::Type::RegType {
-                elem_ty: *elem_ty,
-                dim: dim_val,
-            }),
-            MetaType::TupleType { tys } => {
-                let extracted_tys: Result<Vec<_>, LowerError> =
-                    tys.iter().map(MetaType::extract).collect();
-                extracted_tys.map(|ex_tys| ast::Type::TupleType { tys: ex_tys })
+
+            RevFuncType { in_out_ty } => {
+                ast::Type::RevFuncType {
+                    in_out_ty: Box::new(in_out_ty),
+                }
             }
-            MetaType::UnitType => Ok(ast::Type::UnitType),
-        }
+
+            RegType { elem_ty, dim } => ast::Type::RegType { elem_ty, dim },
+
+            TupleType { tys } => ast::Type::TupleType { tys },
+
+            UnitType => ast::Type::UnitType,
+        })
     }
 }
 

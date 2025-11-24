@@ -521,7 +521,7 @@ impl InferType {
                 Ok(tv_allocator.alloc_type_var())
             }
 
-            // This is the way typecheck.rs works: [] + e has the same type as e
+            // This is the way typecheck.rs works: [] * e has the same type as e
             (InferType::UnitType, other) | (other, InferType::UnitType) => Ok(other),
 
             (
@@ -599,7 +599,7 @@ impl InferType {
             // Not much we can do here
             InferType::TypeVar { .. } => Ok(tv_allocator.alloc_type_var()),
 
-            // This is the way typecheck.rs works: [] + [] has the type []
+            // This is the way typecheck.rs works: [] * [] has the type []
             InferType::UnitType => Ok(InferType::UnitType),
 
             InferType::RegType { elem_ty, dim } => {

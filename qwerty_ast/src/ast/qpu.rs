@@ -218,6 +218,32 @@ pub enum Expr {
     QubitRef(QubitRef),
 }
 
+impl Expr {
+    /// Returns the debug location for this expression.
+    pub fn get_dbg(&self) -> Option<DebugLoc> {
+        match self {
+            Expr::Variable(Variable { dbg, .. })
+            | Expr::UnitLiteral(UnitLiteral { dbg })
+            | Expr::EmbedClassical(EmbedClassical { dbg, .. })
+            | Expr::Adjoint(Adjoint { dbg, .. })
+            | Expr::Pipe(Pipe { dbg, .. })
+            | Expr::Measure(Measure { dbg, .. })
+            | Expr::Discard(Discard { dbg, .. })
+            | Expr::Tensor(Tensor { dbg, .. })
+            | Expr::BasisTranslation(BasisTranslation { dbg, .. })
+            | Expr::Predicated(Predicated { dbg, .. })
+            | Expr::NonUniformSuperpos(NonUniformSuperpos { dbg, .. })
+            | Expr::Ensemble(Ensemble { dbg, .. })
+            | Expr::Conditional(Conditional { dbg, .. })
+            | Expr::BitLiteral(BitLiteral { dbg, .. }) => dbg.clone(),
+
+            Expr::QLit(qlit) => qlit.get_dbg(),
+
+            Expr::QubitRef(_) => None,
+        }
+    }
+}
+
 impl Trivializable for Expr {
     /// Trivial expression is a unit literal.
     fn trivial(dbg: Option<DebugLoc>) -> Self {
@@ -548,6 +574,17 @@ pub enum QLit {
 }
 
 impl QLit {
+    /// Returns the debug location for this qubit literal.
+    pub fn get_dbg(&self) -> Option<DebugLoc> {
+        let (QLit::ZeroQubit { dbg }
+        | QLit::OneQubit { dbg }
+        | QLit::QubitTilt { dbg, .. }
+        | QLit::UniformSuperpos { dbg, .. }
+        | QLit::QubitTensor { dbg, .. }
+        | QLit::QubitUnit { dbg }) = self;
+        dbg.clone()
+    }
+
     /// Converts a qubit literal to a basis vector since in the spec, every ql
     /// is a bv.
     pub fn convert_to_basis_vector(&self) -> Vector {

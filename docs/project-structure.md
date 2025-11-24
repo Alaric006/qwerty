@@ -4,13 +4,15 @@ Project Structure
 This repository consists of the following five top-level subprojects:
 
 1. `qwerty_ast` (Rust): Defines the Qwerty AST and typechecking/optimizations on it
-2. `qwerty_mlir` (C++/Tablegen): MLIR dialects/passes for optimizing Qwerty
+2. `qwerty_ast_macros` (Rust): Defines Rust [procedural macros][15] that generate
+   code that manipulates `qwerty_ast` ASTs without recursive code
+3. `qwerty_mlir` (C++/Tablegen): MLIR dialects/passes for optimizing Qwerty
    programs and producing OpenQASM 3 or QIR
-3. `qwerty_ast_to_mlir` (Rust): Converts a Qwerty AST to MLIR, JITs the MLIR,
+4. `qwerty_ast_to_mlir` (Rust): Converts a Qwerty AST to MLIR, JITs the MLIR,
    and then runs it
-4. `qwerty_util` (C++): C++ utility code, presently just a wrapper around
+5. `qwerty_util` (C++): C++ utility code, presently just a wrapper around
    [`tweedledum`][4]
-5. `qwerty_pyrt` (Python/Rust): Defines the `qwerty` module, a little bit of Python that
+6. `qwerty_pyrt` (Python/Rust): Defines the `qwerty` module, a little bit of Python that
    interfaces with the Rust code above via [PyO3][3]
 
 There are also the following forks of third-party libraries that referenced as
@@ -197,3 +199,4 @@ brackets.
 [12]: https://arxiv.org/abs/1210.0974
 [13]: https://github.com/lsils/mockturtle
 [14]: https://docs.python.org/3/library/ast.html
+[15]: https://doc.rust-lang.org/book/ch20-05-macros.html#procedural-macros-for-generating-code-from-attributes
