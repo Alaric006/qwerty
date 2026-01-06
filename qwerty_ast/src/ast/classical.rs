@@ -1,8 +1,9 @@
 //! Expressions for `@classical` functions.
 
-use super::{BitLiteral, Canonicalizable, ToPythonCode, Trivializable, Variable};
+use super::{Canonicalizable, ToPythonCode, Trivializable};
 use crate::dbg::DebugLoc;
 use dashu::integer::UBig;
+use qwerty_ast_macros::{gen_rebuild_structs, rebuild};
 use std::fmt;
 
 // ----- Classical Operators -----
@@ -25,138 +26,161 @@ pub enum RotateOpKind {
     Rotl,
 }
 
-// Structs for classical::Expr variants
+gen_rebuild_structs! {
+    configs {
+        canonicalize(
+            rewrite(canonicalize_rewriter),
+        ),
+    }
 
-/// See [`Expr::Slice`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct Slice {
-    pub val: Box<Expr>,
-    pub lower: usize,
-    pub upper: Option<usize>,
-    pub dbg: Option<DebugLoc>,
-}
+    defs {
+        /// See [`Expr::Variable`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Variable {
+            pub name: String,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::UnaryNot`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct UnaryOp {
-    pub kind: UnaryOpKind,
-    pub val: Box<Expr>,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::Slice`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Slice {
+            pub val: Box<Expr>,
+            pub lower: usize,
+            pub upper: Option<usize>,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::BinaryOp`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct BinaryOp {
-    pub kind: BinaryOpKind,
-    pub left: Box<Expr>,
-    pub right: Box<Expr>,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::UnaryNot`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct UnaryOp {
+            pub kind: UnaryOpKind,
+            pub val: Box<Expr>,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::ReduceOp`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReduceOp {
-    pub kind: BinaryOpKind,
-    pub val: Box<Expr>,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::BinaryOp`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct BinaryOp {
+            pub kind: BinaryOpKind,
+            pub left: Box<Expr>,
+            pub right: Box<Expr>,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::RotateOp`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct RotateOp {
-    pub kind: RotateOpKind,
-    pub val: Box<Expr>,
-    pub amt: Box<Expr>,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::ReduceOp`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct ReduceOp {
+            pub kind: BinaryOpKind,
+            pub val: Box<Expr>,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::Concat`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct Concat {
-    pub left: Box<Expr>,
-    pub right: Box<Expr>,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::RotateOp`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct RotateOp {
+            pub kind: RotateOpKind,
+            pub val: Box<Expr>,
+            pub amt: Box<Expr>,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::Repeat`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct Repeat {
-    pub val: Box<Expr>,
-    pub amt: usize,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::Concat`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Concat {
+            pub left: Box<Expr>,
+            pub right: Box<Expr>,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::ModMul`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct ModMul {
-    pub x: usize,
-    pub j: usize,
-    pub y: Box<Expr>,
-    pub mod_n: usize,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::Repeat`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Repeat {
+            pub val: Box<Expr>,
+            pub amt: usize,
+            pub dbg: Option<DebugLoc>,
+        }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
-    /// A variable name used in an expression. Example syntax:
-    /// ```text
-    /// my_var
-    /// ```
-    Variable(Variable),
+        /// See [`Expr::ModMul`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct ModMul {
+            pub x: usize,
+            pub j: usize,
+            pub y: Box<Expr>,
+            pub mod_n: usize,
+            pub dbg: Option<DebugLoc>,
+        }
 
-    /// Extract a subsequence of bits from a register. Example syntax:
-    /// ```text
-    /// my_bit_reg[2:4]
-    /// ```
-    Slice(Slice),
+        /// See [`Expr::BitLiteral`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct BitLiteral {
+            pub val: UBig,
+            pub n_bits: usize,
+            pub dbg: Option<DebugLoc>,
+        }
 
-    /// A unary bitwise operation. Example syntax:
-    /// ```text
-    /// ~x
-    /// ```
-    UnaryOp(UnaryOp),
+        #[derive(Debug, Clone, PartialEq)]
+        pub enum Expr {
+            /// A variable name used in an expression. Example syntax:
+            /// ```text
+            /// my_var
+            /// ```
+            Variable(Variable),
 
-    /// A binary bitwise operation. Example syntax:
-    /// ```text
-    /// x & y
-    /// ```
-    BinaryOp(BinaryOp),
+            /// Extract a subsequence of bits from a register. Example syntax:
+            /// ```text
+            /// my_bit_reg[2:4]
+            /// ```
+            Slice(Slice),
 
-    /// A logical reduction operation. Example syntax:
-    /// ```text
-    /// x.xor_reduce()
-    /// ```
-    ReduceOp(ReduceOp),
+            /// A unary bitwise operation. Example syntax:
+            /// ```text
+            /// ~x
+            /// ```
+            UnaryOp(UnaryOp),
 
-    /// A bit rotation. Example syntax:
-    /// ```text
-    /// val_reg.rotl(amt_reg)
-    /// ```
-    RotateOp(RotateOp),
+            /// A binary bitwise operation. Example syntax:
+            /// ```text
+            /// x & y
+            /// ```
+            BinaryOp(BinaryOp),
 
-    /// Concatenate bit registers. Example syntax:
-    /// ```text
-    /// x.concat(y)
-    /// ```
-    Concat(Concat),
+            /// A logical reduction operation. Example syntax:
+            /// ```text
+            /// x.xor_reduce()
+            /// ```
+            ReduceOp(ReduceOp),
 
-    /// Copy a bit n times. Example syntax:
-    /// ```text
-    /// x.repeat(37)
-    /// ```
-    Repeat(Repeat),
+            /// A bit rotation. Example syntax:
+            /// ```text
+            /// val_reg.rotl(amt_reg)
+            /// ```
+            RotateOp(RotateOp),
 
-    /// Modular multiplication. Example syntax:
-    /// ```text
-    /// x**2**J * y % modN
-    /// ```
-    ModMul(ModMul),
+            /// Concatenate bit registers. Example syntax:
+            /// ```text
+            /// x.concat(y)
+            /// ```
+            Concat(Concat),
 
-    /// A constant bit register. Example syntax:
-    /// ```text
-    /// bit[4](0b1101)
-    /// ```
-    BitLiteral(BitLiteral),
+            /// Copy a bit n times. Example syntax:
+            /// ```text
+            /// x.repeat(37)
+            /// ```
+            Repeat(Repeat),
+
+            /// Modular multiplication. Example syntax:
+            /// ```text
+            /// x**2**J * y % modN
+            /// ```
+            ModMul(ModMul),
+
+            /// A constant bit register. Example syntax:
+            /// ```text
+            /// bit[4](0b1101)
+            /// ```
+            BitLiteral(BitLiteral),
+        }
+    }
 }
 
 impl Expr {
@@ -175,12 +199,41 @@ impl Expr {
 
         dbg.clone()
     }
+
+    /// Called by `gen_rebuild` for the `canonicalize` config. The resulting
+    /// rebuild code is called in the implementation of [`Canonicalize`] trait.
+    pub(crate) fn canonicalize_rewriter(self) -> Self {
+        match self {
+            Expr::UnaryOp(UnaryOp {
+                kind: UnaryOpKind::Not,
+                val,
+                dbg,
+            }) => {
+                match *val {
+                    // ~~x --> x
+                    Expr::UnaryOp(UnaryOp {
+                        kind: UnaryOpKind::Not,
+                        val: inner_val,
+                        dbg: _,
+                    }) => *inner_val,
+
+                    other => Expr::UnaryOp(UnaryOp {
+                        kind: UnaryOpKind::Not,
+                        val: Box::new(other),
+                        dbg,
+                    }),
+                }
+            }
+
+            already_canon => already_canon,
+        }
+    }
 }
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Expr::Variable(var) => write!(f, "{}", var),
+            Expr::Variable(var) => write!(f, "{}", var), // Defer to impl in ast.rs
             Expr::Slice(Slice {
                 val, lower, upper, ..
             }) => {
@@ -228,7 +281,7 @@ impl fmt::Display for Expr {
             Expr::ModMul(ModMul { x, j, y, mod_n, .. }) => {
                 write!(f, "{}**2**{} * ({}) % {}", x, j, *y, mod_n)
             }
-            Expr::BitLiteral(blit) => write!(f, "{}", blit),
+            Expr::BitLiteral(blit) => write!(f, "{}", blit), // Defer to impl in ast.rs
         }
     }
 }
@@ -260,25 +313,7 @@ impl Trivializable for Expr {
 }
 
 impl Canonicalizable for Expr {
-    fn canonicalize(&self) -> Self {
-        match self {
-            Expr::UnaryOp(UnaryOp {
-                kind: UnaryOpKind::Not,
-                val,
-                dbg: _,
-            }) => {
-                match &**val {
-                    // ~~x --> x
-                    Expr::UnaryOp(UnaryOp {
-                        kind: UnaryOpKind::Not,
-                        val: inner_val,
-                        dbg: _,
-                    }) => (**inner_val).clone(),
-                    _ => self.clone(),
-                }
-            }
-
-            _ => self.clone(),
-        }
+    fn canonicalize(self) -> Self {
+        rebuild!(Expr, self, canonicalize)
     }
 }

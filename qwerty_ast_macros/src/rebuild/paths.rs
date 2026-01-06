@@ -49,12 +49,17 @@ pub fn path_as_ident<'a>(path: &'a Path) -> Option<&'a Ident> {
     }
 }
 
+/// Rewrite `MetaExpr` as `meta_expr`
+pub fn ident_to_snake_case(ident: &Ident) -> Ident {
+    let span = ident.span();
+    let snake_case_name = ident.to_string().to_case(Case::Snake);
+    Ident::new(&snake_case_name, span)
+}
+
 /// Rewrite `MetaExpr<T>` as `meta_expr<T>`
 fn path_seg_to_snake_case(path_seg: PathSegment) -> PathSegment {
-    let span = path_seg.span();
     let PathSegment { ident, arguments } = path_seg;
-    let snake_case_name = ident.to_string().to_case(Case::Snake);
-    let new_ident = Ident::new(&snake_case_name, span);
+    let new_ident = ident_to_snake_case(&ident);
     PathSegment {
         ident: new_ident,
         arguments,

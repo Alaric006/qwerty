@@ -64,6 +64,12 @@ impl fmt::Display for DimVar {
         more_copied_args(env: &MacroEnv),
         result_err(LowerError),
     ),
+    strip_dbg(
+        rewrite(strip_dbg_rewriter),
+    ),
+    canonicalize(
+        rewrite(canonicalize_rewriter),
+    ),
 }]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DimExpr {
@@ -142,25 +148,23 @@ impl DimExpr {
 
     /// Return the same dimension variable expression but without any debug
     /// symbols. Useful for comparing expressions.
-    pub fn strip_dbg(&self) -> DimExpr {
-        match self {
-            DimExpr::DimVar { var, dbg: _ } => DimExpr::DimVar {
-                var: var.clone(),
-                dbg: None,
-            },
+    pub fn strip_dbg(self) -> DimExpr {
+        rebuild!(DimExpr, self, strip_dbg)
+    }
 
-            DimExpr::DimConst { val, dbg: _ } => DimExpr::DimConst {
-                val: val.clone(),
-                dbg: None,
-            },
+    pub(crate) fn strip_dbg_rewriter(self) -> DimExpr {
+        match self {
+            DimExpr::DimVar { var, dbg: _ } => DimExpr::DimVar { var, dbg: None },
+
+            DimExpr::DimConst { val, dbg: _ } => DimExpr::DimConst { val, dbg: None },
 
             DimExpr::DimSum {
                 left,
                 right,
                 dbg: _,
             } => DimExpr::DimSum {
-                left: Box::new(left.strip_dbg()),
-                right: Box::new(right.strip_dbg()),
+                left,
+                right,
                 dbg: None,
             },
 
@@ -169,51 +173,56 @@ impl DimExpr {
                 right,
                 dbg: _,
             } => DimExpr::DimProd {
-                left: Box::new(left.strip_dbg()),
-                right: Box::new(right.strip_dbg()),
+                left,
+                right,
                 dbg: None,
             },
 
             DimExpr::DimPow { base, pow, dbg: _ } => DimExpr::DimPow {
-                base: Box::new(base.strip_dbg()),
-                pow: Box::new(pow.strip_dbg()),
+                base,
+                pow,
                 dbg: None,
             },
 
-            DimExpr::DimNeg { val, dbg: _ } => DimExpr::DimNeg {
-                val: Box::new(val.strip_dbg()),
-                dbg: None,
-            },
+            DimExpr::DimNeg { val, dbg: _ } => DimExpr::DimNeg { val, dbg: None },
         }
     }
 
     /// Recursively flatten a tree of `DimSum`s into a list of operands.
-    fn flatten_sum(&self, out: &mut Vec<DimExpr>) {
-        if let DimExpr::DimSum {
-            left,
-            right,
-            dbg: _,
-        } = self
-        {
-            left.flatten_sum(out);
-            right.flatten_sum(out);
-        } else {
-            out.push(self.clone());
+    fn flatten_sum(self, out: &mut Vec<DimExpr>) {
+        let mut stack = vec![self];
+
+        while let Some(node) = stack.pop() {
+            if let DimExpr::DimSum {
+                left,
+                right,
+                dbg: _,
+            } = node
+            {
+                stack.push(*right);
+                stack.push(*left);
+            } else {
+                out.push(node);
+            }
         }
     }
 
     /// Recursively flatten a tree of `DimProd`s into a list of operands.
-    fn flatten_prod(&self, out: &mut Vec<DimExpr>) {
-        if let DimExpr::DimProd {
-            left,
-            right,
-            dbg: _,
-        } = self
-        {
-            left.flatten_prod(out);
-            right.flatten_prod(out);
-        } else {
-            out.push(self.clone());
+    fn flatten_prod(self, out: &mut Vec<DimExpr>) {
+        let mut stack = vec![self];
+
+        while let Some(node) = stack.pop() {
+            if let DimExpr::DimProd {
+                left,
+                right,
+                dbg: _,
+            } = node
+            {
+                stack.push(*right);
+                stack.push(*left);
+            } else {
+                out.push(node);
+            }
         }
     }
 
@@ -226,26 +235,29 @@ impl DimExpr {
     ///
     /// Debug symbols are not removed. You should call [`DimExpr::strip_dbg`]
     /// for that first if you want it.
-    pub fn canonicalize(&self) -> DimExpr {
+    pub fn canonicalize(self) -> DimExpr {
+        rebuild!(DimExpr, self, canonicalize)
+    }
+
+    pub(crate) fn canonicalize_rewriter(self) -> DimExpr {
         match self {
-            // Base cases
-            DimExpr::DimVar { .. } | DimExpr::DimConst { .. } => self.clone(),
-
-            DimExpr::DimNeg { val, dbg } => DimExpr::DimNeg {
-                val: Box::new(val.canonicalize()),
-                dbg: dbg.clone(),
-            },
-
-            DimExpr::DimPow { base, pow, dbg } => DimExpr::DimPow {
-                base: Box::new(base.canonicalize()),
-                pow: Box::new(pow.canonicalize()),
-                dbg: dbg.clone(),
-            },
+            DimExpr::DimNeg { val, dbg } => {
+                // --N => N
+                if let DimExpr::DimNeg {
+                    val: inner_val,
+                    dbg: _,
+                } = *val
+                {
+                    *inner_val
+                } else {
+                    DimExpr::DimNeg { val, dbg }
+                }
+            }
 
             DimExpr::DimSum { left, right, dbg } => {
                 let mut vals = vec![];
-                left.canonicalize().flatten_sum(&mut vals);
-                right.canonicalize().flatten_sum(&mut vals);
+                left.flatten_sum(&mut vals);
+                right.flatten_sum(&mut vals);
                 vals = vals.into_iter().filter(|v| !v.is_constant_zero()).collect();
                 vals.sort();
                 vals.into_iter()
@@ -256,14 +268,14 @@ impl DimExpr {
                     })
                     .unwrap_or_else(|| DimExpr::DimConst {
                         val: IBig::ZERO,
-                        dbg: dbg.clone(),
+                        dbg,
                     })
             }
 
             DimExpr::DimProd { left, right, dbg } => {
                 let mut vals = vec![];
-                left.canonicalize().flatten_prod(&mut vals);
-                right.canonicalize().flatten_prod(&mut vals);
+                left.flatten_prod(&mut vals);
+                right.flatten_prod(&mut vals);
                 vals = vals.into_iter().filter(|v| !v.is_constant_one()).collect();
                 vals.sort();
                 vals.into_iter()
@@ -274,9 +286,13 @@ impl DimExpr {
                     })
                     .unwrap_or_else(|| DimExpr::DimConst {
                         val: IBig::ONE,
-                        dbg: dbg.clone(),
+                        dbg,
                     })
             }
+
+            already_canon @ (DimExpr::DimVar { .. }
+            | DimExpr::DimConst { .. }
+            | DimExpr::DimPow { .. }) => already_canon,
         }
     }
 

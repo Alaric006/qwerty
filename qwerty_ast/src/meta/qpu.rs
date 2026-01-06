@@ -884,12 +884,12 @@ impl MetaExpr {
         rewritten: rewrite_ty!(MetaExpr, extract),
     ) -> Result<ast::qpu::Expr, LowerError> {
         rewrite_match! {MetaExpr, extract, rewritten,
-            Variable { name, dbg } => Ok(ast::qpu::Expr::Variable(ast::Variable { name, dbg })),
+            Variable { name, dbg } => Ok(ast::qpu::Expr::Variable(ast::qpu::Variable { name, dbg })),
 
             UnitLiteral { dbg } => Ok(ast::qpu::Expr::UnitLiteral(ast::qpu::UnitLiteral { dbg })),
 
             EmbedClassical { func, embed_kind, dbg } => {
-                if let ast::qpu::Expr::Variable(ast::Variable { name, dbg: _ }) = func {
+                if let ast::qpu::Expr::Variable(ast::qpu::Variable { name, dbg: _ }) = func {
                     Ok(ast::qpu::Expr::EmbedClassical(ast::qpu::EmbedClassical {
                         func_name: name,
                         embed_kind,
@@ -955,10 +955,11 @@ impl MetaExpr {
                 let pairs = pairs
                     .into_iter()
                     .map(|(prob, vec)| {
-                        let qlit = vec.convert_to_qubit_literal()
+                        let dbg = vec.get_dbg();
+                        let qlit = vec.try_into_qubit_literal()
                             .ok_or_else(|| LowerError {
                                 kind: LowerErrorKind::IllegalQubitSymbolInQubitLiteral,
-                                dbg: vec.get_dbg(),
+                                dbg,
                             })?;
                         Ok((prob, qlit))
                     })
@@ -973,10 +974,11 @@ impl MetaExpr {
                 let pairs = pairs
                     .into_iter()
                     .map(|(prob, vec)| {
-                        let qlit = vec.convert_to_qubit_literal()
+                        let dbg = vec.get_dbg();
+                        let qlit = vec.try_into_qubit_literal()
                             .ok_or_else(|| LowerError {
                                 kind: LowerErrorKind::IllegalQubitSymbolInQubitLiteral,
-                                dbg: vec.get_dbg(),
+                                dbg,
                             })?;
                         Ok((prob, qlit))
                     })
@@ -997,16 +999,17 @@ impl MetaExpr {
             }
 
             QLit { vec } => {
-                let qlit = vec.convert_to_qubit_literal()
+                let dbg = vec.get_dbg();
+                let qlit = vec.try_into_qubit_literal()
                     .ok_or_else(|| LowerError {
                         kind: LowerErrorKind::IllegalQubitSymbolInQubitLiteral,
-                        dbg: vec.get_dbg(),
+                        dbg: dbg.clone(),
                     })?;
-                Ok(ast::qpu::Expr::QLit(qlit))
+                Ok(ast::qpu::Expr::QLitExpr(ast::qpu::QLitExpr { qlit, dbg }))
             }
 
             BitLiteral { val, n_bits, dbg } => {
-                Ok(ast::qpu::Expr::BitLiteral(ast::BitLiteral { val, n_bits, dbg }))
+                Ok(ast::qpu::Expr::BitLiteral(ast::qpu::BitLiteral { val, n_bits, dbg }))
             }
 
             ExprMacro { dbg, .. }

@@ -174,7 +174,7 @@ impl MetaExpr {
                 dbg,
             }),
             Variable { name, dbg } => {
-                Ok(ast::classical::Expr::Variable(ast::Variable { name, dbg }))
+                Ok(ast::classical::Expr::Variable(ast::classical::Variable { name, dbg }))
             }
             Slice { val, lower, upper, dbg, } => {
                 Ok(ast::classical::Expr::Slice(ast::classical::Slice {
@@ -216,7 +216,7 @@ impl MetaExpr {
                 }))
             }
             BitLiteral { val, n_bits, dbg } => {
-                Ok(ast::classical::Expr::BitLiteral(ast::BitLiteral {
+                Ok(ast::classical::Expr::BitLiteral(ast::classical::BitLiteral {
                     val,
                     n_bits,
                     dbg,

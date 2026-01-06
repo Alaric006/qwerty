@@ -15,8 +15,11 @@ use melior::{
 };
 use qwerty_ast::{
     ast::{
-        self, BitLiteral, FunctionDef, RegKind, Type, Variable,
-        classical::{self, BinaryOp, BinaryOpKind, ModMul, ReduceOp, Slice, UnaryOp, UnaryOpKind},
+        self, FunctionDef, RegKind, Type,
+        classical::{
+            self, BinaryOp, BinaryOpKind, BitLiteral, ModMul, ReduceOp, Slice, UnaryOp,
+            UnaryOpKind, Variable,
+        },
     },
     typecheck::{ComputeKind, FuncsAvailable},
 };

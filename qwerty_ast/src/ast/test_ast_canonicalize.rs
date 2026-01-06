@@ -18,7 +18,7 @@ fn test_canonicalize_removes_trivial_qpu_statements() {
                     dbg: None,
                 }),
                 Stmt::Return(Return {
-                    val: qpu::Expr::BitLiteral(BitLiteral {
+                    val: qpu::Expr::BitLiteral(qpu::BitLiteral {
                         val: UBig::ZERO,
                         n_bits: 2,
                         dbg: None,
@@ -43,7 +43,7 @@ fn test_canonicalize_removes_trivial_qpu_statements() {
             body: vec![
                 // Note that unit literal statement is gone
                 Stmt::Return(Return {
-                    val: qpu::Expr::BitLiteral(BitLiteral {
+                    val: qpu::Expr::BitLiteral(qpu::BitLiteral {
                         val: UBig::ZERO,
                         n_bits: 2,
                         dbg: None,
@@ -75,7 +75,7 @@ fn test_canonicalize_removes_trivial_classical_statements() {
                 Stmt::Expr(StmtExpr {
                     expr: classical::Expr::UnaryOp(classical::UnaryOp {
                         kind: classical::UnaryOpKind::Not,
-                        val: Box::new(classical::Expr::BitLiteral(BitLiteral {
+                        val: Box::new(classical::Expr::BitLiteral(classical::BitLiteral {
                             val: UBig::ZERO,
                             n_bits: 3,
                             dbg: None,
@@ -85,7 +85,7 @@ fn test_canonicalize_removes_trivial_classical_statements() {
                     dbg: None,
                 }),
                 Stmt::Return(Return {
-                    val: classical::Expr::BitLiteral(BitLiteral {
+                    val: classical::Expr::BitLiteral(classical::BitLiteral {
                         val: UBig::ZERO,
                         n_bits: 2,
                         dbg: None,
@@ -110,7 +110,7 @@ fn test_canonicalize_removes_trivial_classical_statements() {
             body: vec![
                 // Note that unhelpful ~bit[3](0b000) is gone
                 Stmt::Return(Return {
-                    val: classical::Expr::BitLiteral(BitLiteral {
+                    val: classical::Expr::BitLiteral(classical::BitLiteral {
                         val: UBig::ZERO,
                         n_bits: 2,
                         dbg: None,

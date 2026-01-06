@@ -8,16 +8,16 @@ use std::collections::{HashMap, HashSet};
 use std::iter::zip;
 
 use crate::ast::{
-    Assign, BitLiteral, Func, FunctionDef, Program, RegKind, Return, Stmt, StmtExpr, Type,
-    UnpackAssign, Variable, angles_are_approx_equal, anti_phase,
+    Assign, Func, FunctionDef, Program, RegKind, Return, Stmt, StmtExpr, Type, UnpackAssign,
+    angles_are_approx_equal, anti_phase,
     classical::{
         self, BinaryOp, Concat, ModMul, ReduceOp, Repeat, RotateOp, Slice, UnaryOp, UnaryOpKind,
     },
-    in_phase, qpu,
+    in_phase,
     qpu::{
-        Adjoint, Basis, BasisGenerator, BasisTranslation, Conditional, Discard, EmbedClassical,
-        EmbedKind, Ensemble, Measure, NonUniformSuperpos, Pipe, Predicated, QLit, QubitRef, Tensor,
-        UnitLiteral, Vector, VectorAtomKind,
+        self, Adjoint, Basis, BasisGenerator, BasisTranslation, Conditional, Discard,
+        EmbedClassical, EmbedKind, Ensemble, Measure, NonUniformSuperpos, Pipe, Predicated, QLit,
+        QLitExpr, QubitRef, Tensor, UnitLiteral, Vector, VectorAtomKind,
     },
 };
 
@@ -578,34 +578,83 @@ fn tensor_product_types(
     }
 }
 
-impl Variable {
-    pub fn calc_type(&self, env: &mut TypeEnv) -> Result<(Type, ComputeKind), TypeError> {
-        let Variable { name, dbg } = self;
-        let (var_ty, compute_kind) = if let Some(var_ty) = env.get_var(name) {
-            // Surprisingly, referencing a variable is always reversible.
-            // How you use the variable is what determines reversibility.
-            Ok((var_ty.clone(), ComputeKind::Rev))
-        } else {
-            Err(TypeError {
-                kind: TypeErrorKind::UndefinedVariable(name.to_string()),
-                dbg: dbg.clone(),
-            })
-        }?;
+/// Shared implementation of `calc_type()` and `typecheck()` for
+/// [`qpu::Variable`]/[`classical::Variable`] and
+/// [`qpu::Expr::BitLiteral`]/[`classical::Expr::BitLiteral`].
+macro_rules! impl_typecheck {
+    (Variable => [$($variable_ty:ty),+]) => {
+        $(
+            impl $variable_ty {
+                pub fn calc_type(&self, env: &mut TypeEnv) -> Result<(Type, ComputeKind), TypeError> {
+                    let Self { name, dbg } = self;
+                    let (var_ty, compute_kind) = if let Some(var_ty) = env.get_var(name) {
+                        // Surprisingly, referencing a variable is always reversible.
+                        // How you use the variable is what determines reversibility.
+                        Ok((var_ty.clone(), ComputeKind::Rev))
+                    } else {
+                        Err(TypeError {
+                            kind: TypeErrorKind::UndefinedVariable(name.to_string()),
+                            dbg: dbg.clone(),
+                        })
+                    }?;
 
-        if var_ty.is_linear() && !env.linear_vars_used.insert(name.to_string()) {
-            Err(TypeError {
-                kind: TypeErrorKind::LinearVariableUsedTwice(name.to_string()),
-                dbg: dbg.clone(),
-            })
-        } else {
-            Ok((var_ty, compute_kind))
-        }
-    }
+                    if var_ty.is_linear() && !env.linear_vars_used.insert(name.to_string()) {
+                        Err(TypeError {
+                            kind: TypeErrorKind::LinearVariableUsedTwice(name.to_string()),
+                            dbg: dbg.clone(),
+                        })
+                    } else {
+                        Ok((var_ty, compute_kind))
+                    }
+                }
 
-    pub fn typecheck(&self, env: &mut TypeEnv) -> Result<(Type, ComputeKind), TypeError> {
-        self.calc_type(env)
-    }
+                pub fn typecheck(&self, env: &mut TypeEnv) -> Result<(Type, ComputeKind), TypeError> {
+                    self.calc_type(env)
+                }
+            }
+        )+
+    };
+
+    (BitLiteral => [$($bit_literal_ty:ty),+]) => {
+        $(
+            impl $bit_literal_ty {
+                pub fn calc_type(&self) -> Result<(Type, ComputeKind), TypeError> {
+                    let Self {
+                        val: _,
+                        n_bits,
+                        dbg,
+                    } = self;
+
+                    if *n_bits == 0 {
+                        Err(TypeError {
+                            kind: TypeErrorKind::EmptyLiteral,
+                            dbg: dbg.clone(),
+                        })
+                    } else if n_bits.bit_len() > *n_bits {
+                        // TODO: use a more descriptive error here
+                        Err(TypeError {
+                            kind: TypeErrorKind::DimMismatch,
+                            dbg: dbg.clone(),
+                        })
+                    } else {
+                        let ty = Type::RegType {
+                            elem_ty: RegKind::Bit,
+                            dim: *n_bits,
+                        };
+                        Ok((ty, ComputeKind::Rev))
+                    }
+                }
+
+                pub fn typecheck(&self) -> Result<(Type, ComputeKind), TypeError> {
+                    self.calc_type()
+                }
+            }
+        )+
+    };
 }
+
+impl_typecheck!(Variable => [qpu::Variable, classical::Variable]);
+impl_typecheck!(BitLiteral => [qpu::BitLiteral, classical::BitLiteral]);
 
 impl UnitLiteral {
     pub fn calc_type(&self) -> Result<(Type, ComputeKind), TypeError> {
@@ -1290,39 +1339,6 @@ impl Conditional {
     }
 }
 
-impl BitLiteral {
-    pub fn calc_type(&self) -> Result<(Type, ComputeKind), TypeError> {
-        let BitLiteral {
-            val: _,
-            n_bits,
-            dbg,
-        } = self;
-
-        if *n_bits == 0 {
-            Err(TypeError {
-                kind: TypeErrorKind::EmptyLiteral,
-                dbg: dbg.clone(),
-            })
-        } else if n_bits.bit_len() > *n_bits {
-            // TODO: use a more descriptive error here
-            Err(TypeError {
-                kind: TypeErrorKind::DimMismatch,
-                dbg: dbg.clone(),
-            })
-        } else {
-            let ty = Type::RegType {
-                elem_ty: RegKind::Bit,
-                dim: *n_bits,
-            };
-            Ok((ty, ComputeKind::Rev))
-        }
-    }
-
-    pub fn typecheck(&self) -> Result<(Type, ComputeKind), TypeError> {
-        self.calc_type()
-    }
-}
-
 impl EmbedClassical {
     pub fn calc_type(&self, env: &TypeEnv) -> Result<(Type, ComputeKind), TypeError> {
         let EmbedClassical {
@@ -1435,7 +1451,7 @@ impl TypeCheckable for qpu::Expr {
             qpu::Expr::NonUniformSuperpos(superpos) => superpos.typecheck(),
             qpu::Expr::Ensemble(ensemble) => ensemble.typecheck(),
             qpu::Expr::Conditional(cond) => cond.typecheck(env),
-            qpu::Expr::QLit(qlit) => qlit.typecheck(),
+            qpu::Expr::QLitExpr(QLitExpr { qlit, .. }) => qlit.typecheck(),
             qpu::Expr::BitLiteral(bit_lit) => bit_lit.typecheck(),
             qpu::Expr::QubitRef(qref) => qref.typecheck(),
         }
@@ -2303,8 +2319,8 @@ fn basis_vectors_are_ortho_nosym(bv_1: &Vector, bv_2: &Vector) -> bool {
 /// orthogonality rules. Practically, this means attempting
 /// `basis_vectors_are_ortho()` and then trying again after applying O-Sym.
 fn basis_vectors_are_ortho(bv_1: &Vector, bv_2: &Vector) -> bool {
-    let canon_bv_1 = bv_1.canonicalize();
-    let canon_bv_2 = bv_2.canonicalize();
+    let canon_bv_1 = bv_1.clone().canonicalize();
+    let canon_bv_2 = bv_2.clone().canonicalize();
     // O-Sym
     basis_vectors_are_ortho_nosym(&canon_bv_1, &canon_bv_2)
         || basis_vectors_are_ortho_nosym(&canon_bv_2, &canon_bv_1)
@@ -2372,8 +2388,8 @@ fn factor_basis(small: &Basis, small_dim: usize, big: &Basis, big_dim: usize) ->
 /// individually passed type checking. This is Algorithm B1 in the CGO '25
 /// paper.
 fn basis_span_equiv(b1: &Basis, b2: &Basis) -> bool {
-    let mut b1_stack = b1.make_explicit().canonicalize().normalize().to_stack();
-    let mut b2_stack = b2.make_explicit().canonicalize().normalize().to_stack();
+    let mut b1_stack = b1.to_explicit().canonicalize().normalize().to_stack();
+    let mut b2_stack = b2.to_explicit().canonicalize().normalize().to_stack();
 
     loop {
         match (b1_stack.pop(), b2_stack.pop()) {
@@ -2429,10 +2445,7 @@ fn basis_span_equiv(b1: &Basis, b2: &Basis) -> bool {
 
 /// Returns true if two qubit literals can be proven to be orthogonal.
 fn qlits_are_ortho(qlit1: &QLit, qlit2: &QLit) -> bool {
-    basis_vectors_are_ortho(
-        &qlit1.convert_to_basis_vector(),
-        &qlit2.convert_to_basis_vector(),
-    )
+    basis_vectors_are_ortho(&qlit1.to_basis_vector(), &qlit2.to_basis_vector())
 }
 
 impl QLit {

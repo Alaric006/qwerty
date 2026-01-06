@@ -4,8 +4,8 @@
 use crate::rebuild::{attrs, paths};
 use proc_macro2::{Delimiter, Span};
 use syn::{
-    Arm, Attribute, Error, Expr, GenericParam, Ident, Pat, PatIdent, PatType, Path, Token, Type,
-    WherePredicate, parenthesized,
+    Arm, Attribute, Error, Expr, GenericParam, Ident, Item, ItemEnum, ItemStruct, Pat, PatIdent,
+    PatType, Path, Token, Type, WherePredicate, braced, parenthesized,
     parse::{Parse, ParseStream},
     spanned::Spanned,
 };
@@ -27,6 +27,7 @@ impl Parse for TypeMapping {
 /// `#[gen_rebuild { expand(...) }]`.
 pub struct RebuildConfig {
     pub name: Ident,
+    pub option: bool,
     pub result_err: Option<Type>,
     pub progress: Option<Type>,
     pub rewrite: Option<Ident>,
@@ -196,6 +197,7 @@ impl Parse for RebuildConfig {
     fn parse(input: ParseStream) -> Result<Self, Error> {
         let name: Ident = input.parse()?;
 
+        let mut option = None;
         let mut result_err = None;
         let mut progress = None;
         let mut rewrite = None;
@@ -217,7 +219,7 @@ impl Parse for RebuildConfig {
                 }
                 let opt_name: Ident = args.parse()?;
                 parse_rebuild_options!((opt_name, args), {
-                    boolean: [recurse_attrs],
+                    boolean: [option, recurse_attrs],
                     ident: [rewrite],
                     ty: [progress, result_err],
                     ty_mappings: [rewrite_to],
@@ -234,7 +236,13 @@ impl Parse for RebuildConfig {
 
         if rewrite_to.is_some() && rewrite.is_none() {
             Err(Error::new(name.span(), "rewrite_to requries rewrite"))
+        } else if result_err.is_some() && option.is_some() {
+            Err(Error::new(
+                name.span(),
+                "Cannot use both result_err and option",
+            ))
         } else {
+            let option = option.unwrap_or(false);
             let rewrite_to = rewrite_to.unwrap_or_else(Vec::new);
             let recurse_attrs = recurse_attrs.unwrap_or(false);
             let more_generic_params = more_generic_params.unwrap_or_else(Vec::new);
@@ -244,6 +252,7 @@ impl Parse for RebuildConfig {
 
             Ok(RebuildConfig {
                 name,
+                option,
                 result_err,
                 progress,
                 rewrite,
@@ -269,6 +278,74 @@ impl Parse for RebuildConfigs {
         let punctuated = input.parse_terminated(RebuildConfig::parse, Token![,])?;
         let configs = punctuated.into_iter().collect();
         Ok(RebuildConfigs { configs })
+    }
+}
+
+mod kw {
+    syn::custom_keyword!(configs);
+    syn::custom_keyword!(defs);
+}
+
+pub struct RebuildStructsArgs {
+    pub configs: Vec<RebuildConfig>,
+    pub variant_structs: Vec<ItemStruct>,
+    pub the_enum: ItemEnum,
+}
+
+impl Parse for RebuildStructsArgs {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
+        // Parse the configurations:
+        //     configs { trivial, expand(...), ... }
+        input.parse::<kw::configs>()?;
+        let all_configs;
+        braced!(all_configs in input);
+        let punctuated = all_configs.parse_terminated(RebuildConfig::parse, Token![,])?;
+        let configs = punctuated.into_iter().collect();
+
+        // Parse the variant structs & enums:
+        //     defs { struct Variable { ... } ... enum Expr { ... } }
+        let defs_kw = input.parse::<kw::defs>()?;
+        let all_defs;
+        braced!(all_defs in input);
+        let mut the_enum = None;
+        let mut variant_structs = Vec::new();
+        while !all_defs.is_empty() {
+            //variant_structs.push(all_variant_structs.parse::<ItemStruct>()?);
+            let item = all_defs.parse::<Item>()?;
+
+            match item {
+                Item::Enum(enum_item) => {
+                    if the_enum.is_some() {
+                        return Err(Error::new_spanned(
+                            enum_item,
+                            "Only one enum is allowed in defs {...}",
+                        ));
+                    } else {
+                        the_enum = Some(enum_item);
+                    }
+                }
+
+                Item::Struct(struct_item) => {
+                    variant_structs.push(struct_item);
+                }
+
+                other_item => {
+                    return Err(Error::new_spanned(
+                        other_item,
+                        "Only enums and structs are allowed in defs {...}",
+                    ));
+                }
+            }
+        }
+
+        let the_enum =
+            the_enum.ok_or_else(|| Error::new_spanned(defs_kw, "Missing enum from defs {...}"))?;
+
+        Ok(RebuildStructsArgs {
+            configs,
+            variant_structs,
+            the_enum,
+        })
     }
 }
 

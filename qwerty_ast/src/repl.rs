@@ -3,9 +3,10 @@
 //! arXiv:2404.12603.
 
 use crate::ast::{
-    BitLiteral, Stmt,
+    Stmt,
     qpu::{
-        Adjoint, Conditional, EmbedClassical, Expr, Predicated, QLit, QubitRef, Tensor, UnitLiteral,
+        Adjoint, BitLiteral, Conditional, EmbedClassical, Expr, Predicated, QLit, QLitExpr,
+        QubitRef, Tensor, UnitLiteral,
     },
 };
 use quantum_sparse_sim::QuantumSim;
@@ -68,7 +69,7 @@ impl Expr {
                     && else_expr.as_ref().is_value()
                     && cond.as_ref().is_value()
             }
-            Expr::QLit(_) => false,
+            Expr::QLitExpr(_) => false,
             Expr::BitLiteral(BitLiteral { n_bits, .. }) => *n_bits == 1,
             Expr::QubitRef(_) => true,
         }
@@ -76,7 +77,7 @@ impl Expr {
 
     pub fn eval_step(&self, state: &mut ReplState) -> Option<Expr> {
         match self {
-            Expr::QLit(qlit) => match qlit {
+            Expr::QLitExpr(QLitExpr { qlit, .. }) => match qlit {
                 QLit::ZeroQubit { .. } => Some(Expr::QubitRef(QubitRef {
                     index: state.sim.allocate(),
                 })),

@@ -296,7 +296,7 @@ fn test_basis_get_atom_indices_basis_tensor_pad() {
 }
 
 #[test]
-fn test_basis_make_explicit_pad() {
+fn test_basis_into_explicit_pad() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -307,11 +307,11 @@ fn test_basis_make_explicit_pad() {
         vecs: vec![Vector::PadVector { dbg: dbg.clone() }],
         dbg: dbg.clone(),
     };
-    assert_eq!(basis.make_explicit(), Basis::EmptyBasisLiteral { dbg });
+    assert_eq!(basis.into_explicit(), Basis::EmptyBasisLiteral { dbg });
 }
 
 #[test]
-fn test_basis_make_explicit_tgt() {
+fn test_basis_into_explicit_tgt() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -322,11 +322,11 @@ fn test_basis_make_explicit_tgt() {
         vecs: vec![Vector::PadVector { dbg: dbg.clone() }],
         dbg: dbg.clone(),
     };
-    assert_eq!(basis.make_explicit(), Basis::EmptyBasisLiteral { dbg });
+    assert_eq!(basis.into_explicit(), Basis::EmptyBasisLiteral { dbg });
 }
 
 #[test]
-fn test_basis_make_explicit_std() {
+fn test_basis_into_explicit_std() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -340,11 +340,11 @@ fn test_basis_make_explicit_std() {
         ],
         dbg: dbg,
     };
-    assert_eq!(basis.make_explicit(), basis);
+    assert_eq!(basis.to_explicit(), basis);
 }
 
 #[test]
-fn test_basis_make_explicit_std_pad() {
+fn test_basis_into_explicit_std_pad() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -377,11 +377,11 @@ fn test_basis_make_explicit_std_pad() {
         ],
         dbg: dbg,
     };
-    assert_eq!(basis.make_explicit(), explicit_basis);
+    assert_eq!(basis.into_explicit(), explicit_basis);
 }
 
 #[test]
-fn test_basis_make_explicit_unit() {
+fn test_basis_into_explicit_unit() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -389,11 +389,11 @@ fn test_basis_make_explicit_unit() {
     });
     // [] -> []
     let basis = Basis::EmptyBasisLiteral { dbg };
-    assert_eq!(basis.make_explicit(), basis);
+    assert_eq!(basis.to_explicit(), basis);
 }
 
 #[test]
-fn test_basis_make_explicit_tensor_pad1() {
+fn test_basis_into_explicit_tensor_pad1() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -417,11 +417,11 @@ fn test_basis_make_explicit_tensor_pad1() {
         vecs: vec![Vector::OneVector { dbg: dbg.clone() }],
         dbg: dbg,
     };
-    assert_eq!(basis.make_explicit(), explicit_basis);
+    assert_eq!(basis.into_explicit(), explicit_basis);
 }
 
 #[test]
-fn test_basis_make_explicit_tensor_pad_pad() {
+fn test_basis_into_explicit_tensor_pad_pad() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -441,11 +441,11 @@ fn test_basis_make_explicit_tensor_pad_pad() {
         ],
         dbg: dbg.clone(),
     };
-    assert_eq!(basis.make_explicit(), Basis::EmptyBasisLiteral { dbg });
+    assert_eq!(basis.into_explicit(), Basis::EmptyBasisLiteral { dbg });
 }
 
 #[test]
-fn test_basis_make_explicit_tensor_01() {
+fn test_basis_into_explicit_tensor_01() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -465,14 +465,14 @@ fn test_basis_make_explicit_tensor_01() {
         ],
         dbg: dbg,
     };
-    assert_eq!(basis.make_explicit(), basis);
+    assert_eq!(basis.to_explicit(), basis);
 }
 
 #[test]
 fn test_basis_canonicalize_unit() {
     // [] -> []
     let basis = Basis::EmptyBasisLiteral { dbg: None };
-    assert_eq!(basis.canonicalize(), basis);
+    assert_eq!(basis.clone().canonicalize(), basis);
 }
 
 #[test]
@@ -485,7 +485,7 @@ fn test_basis_canonicalize_std() {
         ],
         dbg: None,
     };
-    assert_eq!(basis.canonicalize(), basis);
+    assert_eq!(basis.clone().canonicalize(), basis);
 }
 
 #[test]
@@ -625,5 +625,5 @@ fn test_basis_canonicalize_tensor_std_std() {
         ],
         dbg: None,
     };
-    assert_eq!(basis.canonicalize(), basis);
+    assert_eq!(basis.clone().canonicalize(), basis);
 }

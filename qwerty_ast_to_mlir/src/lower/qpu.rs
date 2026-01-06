@@ -20,12 +20,11 @@ use melior::{
 };
 use qwerty_ast::{
     ast::{
-        self, BitLiteral, FunctionDef, RegKind, Variable, angle_is_approx_zero,
-        angles_are_approx_equal,
+        self, FunctionDef, RegKind, angle_is_approx_zero, angles_are_approx_equal,
         qpu::{
-            self, Adjoint, Basis, BasisGenerator, BasisTranslation, Conditional, Discard,
-            EmbedClassical, EmbedKind, Ensemble, Measure, NonUniformSuperpos, Pipe, Predicated,
-            QLit, Tensor, Vector, VectorAtomKind,
+            self, Adjoint, Basis, BasisGenerator, BasisTranslation, BitLiteral, Conditional,
+            Discard, EmbedClassical, EmbedKind, Ensemble, Measure, NonUniformSuperpos, Pipe,
+            Predicated, QLit, QLitExpr, Tensor, Variable, Vector, VectorAtomKind,
         },
     },
     typecheck::{ComputeKind, FuncsAvailable},
@@ -241,7 +240,7 @@ fn ast_vec_to_mlir_helper(vec: &Vector) -> (qwerty::PrimitiveBasis, qwerty::Eige
 
 /// Returns a sequence of qwerty::BasisVectorAttrs for an AST Vector node.
 fn ast_vec_to_mlir(vec: &Vector) -> (Vec<qwerty::BasisVectorAttribute<'static>>, f64) {
-    let canon_vec = vec.canonicalize();
+    let canon_vec = vec.clone().canonicalize();
     let mut vec_attrs = vec![];
     let mut eigenbits = UBig::ZERO;
     let mut prim_basis = None;
@@ -518,7 +517,7 @@ fn try_basis_as_primitive(basis_elems: &Vec<Basis>) -> Option<qwerty::PrimitiveB
 /// of phases which correspond one-to-one with any vectors that have
 /// hasPhase==true.
 fn ast_basis_to_mlir(basis: &Basis) -> MlirBasis {
-    let basis_elements = basis.make_explicit().canonicalize().to_vec();
+    let basis_elements = basis.to_explicit().canonicalize().to_vec();
 
     let prim_basis = try_basis_as_primitive(&basis_elements);
     let (elems, phases) = if let Some(prim_basis) = prim_basis {
@@ -623,7 +622,7 @@ fn ast_basis_to_mlir(basis: &Basis) -> MlirBasis {
 /// Converts a QLit to an mlir::Value. Returns None to handle the edge case []
 /// (QubitUnit). That is, None does not indicate an error.
 fn ast_qlit_to_mlir(qlit: &QLit, block: &Block<'static>) -> Option<Value<'static, 'static>> {
-    let canon_qlit = qlit.canonicalize();
+    let canon_qlit = qlit.clone().canonicalize();
 
     match &canon_qlit {
         QLit::QubitUnit { .. } => None,
@@ -702,8 +701,8 @@ fn ast_qlit_to_mlir(qlit: &QLit, block: &Block<'static>) -> Option<Value<'static
 
         QLit::UniformSuperpos { q1, q2, dbg } => {
             let loc = dbg_to_loc(dbg.clone());
-            let (vecs1, phase1) = ast_vec_to_mlir(&q1.convert_to_basis_vector());
-            let (vecs2, phase2) = ast_vec_to_mlir(&q2.convert_to_basis_vector());
+            let (vecs1, phase1) = ast_vec_to_mlir(&q1.to_basis_vector());
+            let (vecs2, phase2) = ast_vec_to_mlir(&q2.to_basis_vector());
             if vecs1.is_empty() || vecs2.is_empty() {
                 None
             } else {
@@ -957,7 +956,7 @@ fn ast_qpu_qlit_pairs_to_mlir(
     let (term_tys, elems): (Vec<_>, Vec<_>) = pairs
         .iter()
         .map(|(prob, qlit)| {
-            let bv = qlit.convert_to_basis_vector();
+            let bv = qlit.to_basis_vector();
             let (vec_attrs, phase) = ast_vec_to_mlir(&bv);
 
             let prob_attr = FloatAttribute::new(&MLIR_CTX, ir::Type::float64(&MLIR_CTX), *prob);
@@ -1639,7 +1638,7 @@ fn ast_qpu_expr_to_mlir(
             (ty, compute_kind, mlir_vals)
         }
 
-        qpu::Expr::QLit(qlit) => {
+        qpu::Expr::QLitExpr(QLitExpr { qlit, .. }) => {
             let (ty, compute_kind) = qlit
                 .typecheck()
                 .expect("Qubit literal to pass type checking");

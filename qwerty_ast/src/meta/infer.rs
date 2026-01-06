@@ -123,14 +123,16 @@ impl DimVarConstraint {
 
     /// Returns a version of this constraint with debug symbol stripped (via
     /// [`DimExpr::strip_dbg`]) from both sides.
-    pub fn strip_dbg(&self) -> DimVarConstraint {
-        DimVarConstraint::new(self.0.strip_dbg(), self.1.strip_dbg())
+    pub fn strip_dbg(self) -> DimVarConstraint {
+        let DimVarConstraint(left, right) = self;
+        DimVarConstraint::new(left.strip_dbg(), right.strip_dbg())
     }
 
     /// Returns a version of this constraint with both sides in canon form (per
     /// [`DimExpr::canonicalize`]).
-    pub fn canonicalize(&self) -> Self {
-        DimVarConstraint::new(self.0.canonicalize(), self.1.canonicalize())
+    pub fn canonicalize(self) -> Self {
+        let DimVarConstraint(left, right) = self;
+        DimVarConstraint::new(left.canonicalize(), right.canonicalize())
     }
 
     /// Returns `true` if this is obviously trivial.
@@ -149,6 +151,10 @@ impl DimVarConstraints {
 
     pub fn iter(&self) -> impl Iterator<Item = &DimVarConstraint> {
         self.0.iter()
+    }
+
+    pub fn into_iter(self) -> impl Iterator<Item = DimVarConstraint> {
+        self.0.into_iter()
     }
 
     fn insert(&mut self, constraint: DimVarConstraint) {
@@ -1983,10 +1989,10 @@ fn unify_ty(
 
 fn unify_dv(
     old_dv_assign: DimVarAssignments,
-    dv_constraints: &DimVarConstraints,
+    dv_constraints: DimVarConstraints,
 ) -> Result<DimVarAssignments, LowerError> {
     let mut constraints: Vec<_> = dv_constraints
-        .iter()
+        .into_iter()
         .filter_map(|constraint| {
             let canon_constraint = constraint.strip_dbg().canonicalize();
             if canon_constraint.is_obviously_trivial() || !canon_constraint.contains_dim_var() {
@@ -2191,7 +2197,7 @@ impl MetaProgram {
         let (mut ty_constraints, mut dv_constraints, mut ty_assign) =
             self.build_type_constraints()?;
         unify_ty(&mut ty_constraints, &mut dv_constraints, &mut ty_assign)?;
-        let new_dv_assign = unify_dv(old_dv_assign, &dv_constraints)?;
+        let new_dv_assign = unify_dv(old_dv_assign, dv_constraints)?;
         Ok((ty_assign, new_dv_assign))
     }
 
@@ -2235,7 +2241,7 @@ impl qpu::MetaStmt {
             &mut dv_constraints,
         )?;
         unify_ty(&mut ty_constraints, &mut dv_constraints, &mut ty_assign)?;
-        let new_dv_assign = unify_dv(old_dv_assign, &dv_constraints)?;
+        let new_dv_assign = unify_dv(old_dv_assign, dv_constraints)?;
         Ok(new_dv_assign)
     }
 }

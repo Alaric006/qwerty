@@ -421,7 +421,7 @@ fn test_vec_get_atom_indices_empty_tensor() {
 }
 
 #[test]
-fn test_vec_make_explicit_pad() {
+fn test_vec_into_explicit_pad() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -429,11 +429,11 @@ fn test_vec_make_explicit_pad() {
     });
     // '?' -> []
     let vec = Vector::PadVector { dbg: dbg.clone() };
-    assert_eq!(vec.make_explicit(), Vector::VectorUnit { dbg });
+    assert_eq!(vec.into_explicit(), Vector::VectorUnit { dbg });
 }
 
 #[test]
-fn test_vec_make_explicit_tgt() {
+fn test_vec_into_explicit_tgt() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -441,11 +441,11 @@ fn test_vec_make_explicit_tgt() {
     });
     // '_' -> []
     let vec = Vector::TargetVector { dbg: dbg.clone() };
-    assert_eq!(vec.make_explicit(), Vector::VectorUnit { dbg });
+    assert_eq!(vec.into_explicit(), Vector::VectorUnit { dbg });
 }
 
 #[test]
-fn test_vec_make_explicit_zero() {
+fn test_vec_into_explicit_zero() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -453,11 +453,11 @@ fn test_vec_make_explicit_zero() {
     });
     // '0' -> '0'
     let vec = Vector::ZeroVector { dbg: dbg.clone() };
-    assert_eq!(vec.make_explicit(), vec);
+    assert_eq!(vec.to_explicit(), vec);
 }
 
 #[test]
-fn test_vec_make_explicit_one() {
+fn test_vec_into_explicit_one() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -465,11 +465,11 @@ fn test_vec_make_explicit_one() {
     });
     // '1' -> '1'
     let vec = Vector::OneVector { dbg: dbg.clone() };
-    assert_eq!(vec.make_explicit(), vec);
+    assert_eq!(vec.to_explicit(), vec);
 }
 
 #[test]
-fn test_vec_make_explicit_unit() {
+fn test_vec_into_explicit_unit() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -477,11 +477,11 @@ fn test_vec_make_explicit_unit() {
     });
     // [] -> []
     let vec = Vector::VectorUnit { dbg: dbg.clone() };
-    assert_eq!(vec.make_explicit(), vec);
+    assert_eq!(vec.to_explicit(), vec);
 }
 
 #[test]
-fn test_vec_make_explicit_tilt_one() {
+fn test_vec_into_explicit_tilt_one() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -493,11 +493,11 @@ fn test_vec_make_explicit_tilt_one() {
         angle_deg: 180.0,
         dbg: dbg.clone(),
     };
-    assert_eq!(vec.make_explicit(), vec);
+    assert_eq!(vec.to_explicit(), vec);
 }
 
 #[test]
-fn test_vec_make_explicit_tilt_pad() {
+fn test_vec_into_explicit_tilt_pad() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -509,11 +509,11 @@ fn test_vec_make_explicit_tilt_pad() {
         angle_deg: 180.0,
         dbg: dbg.clone(),
     };
-    assert_eq!(vec.make_explicit(), Vector::VectorUnit { dbg });
+    assert_eq!(vec.into_explicit(), Vector::VectorUnit { dbg });
 }
 
 #[test]
-fn test_vec_make_explicit_superpos_p() {
+fn test_vec_into_explicit_superpos_p() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -525,11 +525,11 @@ fn test_vec_make_explicit_superpos_p() {
         q2: Box::new(Vector::ZeroVector { dbg: dbg.clone() }),
         dbg: dbg,
     };
-    assert_eq!(vec.make_explicit(), vec);
+    assert_eq!(vec.to_explicit(), vec);
 }
 
 #[test]
-fn test_vec_make_explicit_tensor_01() {
+fn test_vec_into_explicit_tensor_01() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -543,11 +543,11 @@ fn test_vec_make_explicit_tensor_01() {
         ],
         dbg: dbg.clone(),
     };
-    assert_eq!(vec.make_explicit(), vec);
+    assert_eq!(vec.to_explicit(), vec);
 }
 
 #[test]
-fn test_vec_make_explicit_tensor_0pad1() {
+fn test_vec_into_explicit_tensor_0pad1() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -569,11 +569,11 @@ fn test_vec_make_explicit_tensor_0pad1() {
         ],
         dbg: dbg.clone(),
     };
-    assert_eq!(vec.make_explicit(), explicit_vec);
+    assert_eq!(vec.into_explicit(), explicit_vec);
 }
 
 #[test]
-fn test_vec_make_explicit_tensor_pad() {
+fn test_vec_into_explicit_tensor_pad() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -587,11 +587,11 @@ fn test_vec_make_explicit_tensor_pad() {
         ],
         dbg: dbg.clone(),
     };
-    assert_eq!(vec.make_explicit(), Vector::VectorUnit { dbg });
+    assert_eq!(vec.into_explicit(), Vector::VectorUnit { dbg });
 }
 
 #[test]
-fn test_vec_make_explicit_tensor_pad1() {
+fn test_vec_into_explicit_tensor_pad1() {
     let dbg = Some(DebugLoc {
         file: "skippy.py".to_string(),
         line: 42,
@@ -605,42 +605,42 @@ fn test_vec_make_explicit_tensor_pad1() {
         ],
         dbg: dbg.clone(),
     };
-    assert_eq!(vec.make_explicit(), Vector::OneVector { dbg: dbg.clone() });
+    assert_eq!(vec.into_explicit(), Vector::OneVector { dbg: dbg.clone() });
 }
 
 #[test]
 fn test_vec_canonicalize_zero() {
     // '0' -> '0'
     let vec = Vector::ZeroVector { dbg: None };
-    assert_eq!(vec.canonicalize(), vec);
+    assert_eq!(vec.clone().canonicalize(), vec);
 }
 
 #[test]
 fn test_vec_canonicalize_one() {
     // '1' -> '1'
     let vec = Vector::OneVector { dbg: None };
-    assert_eq!(vec.canonicalize(), vec);
+    assert_eq!(vec.clone().canonicalize(), vec);
 }
 
 #[test]
 fn test_vec_canonicalize_pad() {
     // '?' -> '?'
     let vec = Vector::PadVector { dbg: None };
-    assert_eq!(vec.canonicalize(), vec);
+    assert_eq!(vec.clone().canonicalize(), vec);
 }
 
 #[test]
 fn test_vec_canonicalize_tgt() {
     // '_' -> '_'
     let vec = Vector::TargetVector { dbg: None };
-    assert_eq!(vec.canonicalize(), vec);
+    assert_eq!(vec.clone().canonicalize(), vec);
 }
 
 #[test]
 fn test_vec_canonicalize_unit() {
     // [] -> []
     let vec = Vector::VectorUnit { dbg: None };
-    assert_eq!(vec.canonicalize(), vec);
+    assert_eq!(vec.clone().canonicalize(), vec);
 }
 
 #[test]
@@ -763,7 +763,7 @@ fn test_vec_canonicalize_superpos_p() {
         q2: Box::new(Vector::OneVector { dbg: None }),
         dbg: None,
     };
-    assert_eq!(vec.canonicalize(), vec);
+    assert_eq!(vec.clone().canonicalize(), vec);
 }
 
 #[test]
@@ -792,7 +792,7 @@ fn test_vec_canonicalize_tensor_01() {
         ],
         dbg: None,
     };
-    assert_eq!(vec.canonicalize(), vec);
+    assert_eq!(vec.clone().canonicalize(), vec);
 }
 
 #[test]
@@ -1158,7 +1158,7 @@ fn test_vec_canonicalize_interfere_almost_p_and_m() {
         }),
         dbg: None,
     };
-    assert_eq!(vec.canonicalize(), vec);
+    assert_eq!(vec.clone().canonicalize(), vec);
 }
 
 #[test]

@@ -1,18 +1,14 @@
 //! Expressions and bases for `@qpu` kernels.
 
 use super::{
-    BitLiteral, Canonicalizable, ToPythonCode, Trivializable, Variable, angle_approx_total_cmp,
-    angle_is_approx_zero, angles_are_approx_equal, canon_angle, equals_2_to_the_n,
+    Canonicalizable, ToPythonCode, Trivializable, angle_approx_total_cmp, angle_is_approx_zero,
+    angles_are_approx_equal, canon_angle, equals_2_to_the_n,
 };
 use crate::dbg::DebugLoc;
+use dashu::integer::UBig;
+use qwerty_ast_macros::{gen_rebuild, gen_rebuild_structs, rebuild, rewrite_match, rewrite_ty};
 use std::cmp::Ordering;
 use std::fmt;
-
-/// See [`Expr::UnitLiteral`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct UnitLiteral {
-    pub dbg: Option<DebugLoc>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbedKind {
@@ -21,201 +17,241 @@ pub enum EmbedKind {
     InPlace,
 }
 
-/// See [`Expr::EmbedClassical`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct EmbedClassical {
-    pub func_name: String,
-    pub embed_kind: EmbedKind,
-    pub dbg: Option<DebugLoc>,
-}
+gen_rebuild_structs! {
+    configs {
+        canonicalize(
+            rewrite(canonicalize_rewriter),
+            recurse_attrs,
+        ),
+    }
 
-/// See [`Expr::Adjoint`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct Adjoint {
-    pub func: Box<Expr>,
-    pub dbg: Option<DebugLoc>,
-}
+    defs {
+        /// See [`Expr::Variable`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Variable {
+            pub name: String,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::Pipe`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct Pipe {
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::UnitLiteral`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct UnitLiteral {
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::Measure`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct Measure {
-    pub basis: Basis,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::EmbedClassical`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct EmbedClassical {
+            pub func_name: String,
+            #[gen_rebuild::skip_recurse(canonicalize)]
+            pub embed_kind: EmbedKind,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::Discard`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct Discard {
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::Adjoint`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Adjoint {
+            pub func: Box<Expr>,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::Tensor`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct Tensor {
-    pub vals: Vec<Expr>,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::Pipe`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Pipe {
+            pub lhs: Box<Expr>,
+            pub rhs: Box<Expr>,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::BasisTranslation`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct BasisTranslation {
-    pub bin: Basis,
-    pub bout: Basis,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::Measure`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Measure {
+            pub basis: Basis,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::Predicated`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct Predicated {
-    pub then_func: Box<Expr>,
-    pub else_func: Box<Expr>,
-    pub pred: Basis,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::Discard`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Discard {
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::NonUniformSuperpos`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct NonUniformSuperpos {
-    pub pairs: Vec<(f64, QLit)>,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::Tensor`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Tensor {
+            pub vals: Vec<Expr>,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::Ensemble`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct Ensemble {
-    pub pairs: Vec<(f64, QLit)>,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::BasisTranslation`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct BasisTranslation {
+            pub bin: Basis,
+            pub bout: Basis,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::Conditional`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct Conditional {
-    pub then_expr: Box<Expr>,
-    pub else_expr: Box<Expr>,
-    pub cond: Box<Expr>,
-    pub dbg: Option<DebugLoc>,
-}
+        /// See [`Expr::Predicated`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Predicated {
+            pub then_func: Box<Expr>,
+            pub else_func: Box<Expr>,
+            pub pred: Basis,
+            pub dbg: Option<DebugLoc>,
+        }
 
-/// See [`Expr::QubitRef`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct QubitRef {
-    pub index: usize,
-}
+        /// See [`Expr::NonUniformSuperpos`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct NonUniformSuperpos {
+            pub pairs: Vec<(f64, QLit)>,
+            pub dbg: Option<DebugLoc>,
+        }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
-    /// A variable name used in an expression. Example syntax:
-    /// ```text
-    /// my_var
-    /// ```
-    Variable(Variable),
+        /// See [`Expr::Ensemble`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Ensemble {
+            pub pairs: Vec<(f64, QLit)>,
+            pub dbg: Option<DebugLoc>,
+        }
 
-    /// A unit literal. Represents an empty register or void. Example syntax:
-    /// ```text
-    /// []
-    /// ```
-    UnitLiteral(UnitLiteral),
+        /// See [`Expr::Conditional`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct Conditional {
+            pub then_expr: Box<Expr>,
+            pub else_expr: Box<Expr>,
+            pub cond: Box<Expr>,
+            pub dbg: Option<DebugLoc>,
+        }
 
-    /// Embeds a classical function into a quantum context. Example syntax:
-    /// ```text
-    /// my_classical_func.sign
-    /// ```
-    EmbedClassical(EmbedClassical),
+        /// See [`Expr::QLitExpr`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct QLitExpr {
+            pub qlit: QLit,
+            pub dbg: Option<DebugLoc>,
+        }
 
-    /// Takes the adjoint of a function value. Example syntax:
-    /// ```text
-    /// ~f
-    /// ```
-    Adjoint(Adjoint),
+        /// See [`Expr::BitLiteral`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct BitLiteral {
+            pub val: UBig,
+            pub n_bits: usize,
+            pub dbg: Option<DebugLoc>,
+        }
 
-    /// Calls a function value. Example syntax for `f(x)`:
-    /// ```text
-    /// x | f
-    /// ```
-    Pipe(Pipe),
+        /// See [`Expr::QubitRef`].
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct QubitRef {
+            pub index: usize,
+        }
 
-    /// A function value that measures its input when called. Example syntax:
-    /// ```text
-    /// {'0','1'}.measure
-    /// ```
-    Measure(Measure),
+        #[derive(Debug, Clone, PartialEq)]
+        pub enum Expr {
+            /// A variable name used in an expression. Example syntax:
+            /// ```text
+            /// my_var
+            /// ```
+            Variable(Variable),
 
-    /// A function value that discards its input when called. Example syntax:
-    /// ```text
-    /// discard
-    /// ```
-    Discard(Discard),
+            /// A unit literal. Represents an empty register or void. Example syntax:
+            /// ```text
+            /// []
+            /// ```
+            UnitLiteral(UnitLiteral),
 
-    /// A tensor product of function values or register values. Example syntax:
-    /// ```text
-    /// '0' * '1' * '0'
-    /// ```
-    Tensor(Tensor),
+            /// Embeds a classical function into a quantum context. Example syntax:
+            /// ```text
+            /// my_classical_func.sign
+            /// ```
+            EmbedClassical(EmbedClassical),
 
-    /// The mighty basis translation. Example syntax:
-    /// ```text
-    /// {'0','1'} >> {'0',-'1'}
-    /// ```
-    BasisTranslation(BasisTranslation),
+            /// Takes the adjoint of a function value. Example syntax:
+            /// ```text
+            /// ~f
+            /// ```
+            Adjoint(Adjoint),
 
-    /// A function value that, when called, runs a function value (`then_func`)
-    /// in a proper subspace and another function (`else_func`) in the orthogonal
-    /// complement of that subspace. Example syntax:
-    /// ```text
-    /// flip if {'1_'} else id
-    /// ```
-    Predicated(Predicated),
+            /// Calls a function value. Example syntax for `f(x)`:
+            /// ```text
+            /// x | f
+            /// ```
+            Pipe(Pipe),
 
-    /// A superposition of qubit literals that may not have uniform
-    /// probabilities. Example syntax:
-    /// ```text
-    /// 0.25*'0' + 0.75*'1'
-    /// ```
-    NonUniformSuperpos(NonUniformSuperpos),
+            /// A function value that measures its input when called. Example syntax:
+            /// ```text
+            /// {'0','1'}.measure
+            /// ```
+            Measure(Measure),
 
-    /// An ensemble of qubit literals that may not have uniform
-    /// probabilities. Example syntax:
-    /// ```text
-    /// 0.25*'0' ^ 0.75*'1'
-    /// ```
-    /// Another example:
-    /// ```text
-    /// '0' ^ '1'
-    /// ```
-    Ensemble(Ensemble),
+            /// A function value that discards its input when called. Example syntax:
+            /// ```text
+            /// discard
+            /// ```
+            Discard(Discard),
 
-    /// A classical conditional (ternary) expression. Example syntax:
-    /// ```text
-    /// flip if meas_result else id
-    /// ```
-    Conditional(Conditional),
+            /// A tensor product of function values or register values. Example syntax:
+            /// ```text
+            /// '0' * '1' * '0'
+            /// ```
+            Tensor(Tensor),
 
-    /// A qubit literal. Example syntax:
-    /// ```text
-    /// '0' + '1'
-    /// ```
-    QLit(QLit),
+            /// The mighty basis translation. Example syntax:
+            /// ```text
+            /// {'0','1'} >> {'0',-'1'}
+            /// ```
+            BasisTranslation(BasisTranslation),
 
-    /// A classical bit literal. Example syntax:
-    /// ```text
-    /// bit[4](0b1101)
-    /// ```
-    BitLiteral(BitLiteral),
+            /// A function value that, when called, runs a function value (`then_func`)
+            /// in a proper subspace and another function (`else_func`) in the orthogonal
+            /// complement of that subspace. Example syntax:
+            /// ```text
+            /// flip if {'1_'} else id
+            /// ```
+            Predicated(Predicated),
 
-    /// A reference to a qubit, q_i in Appendix A of arXiv:2404.12603. This is
-    /// only involved in intermediate computations, so there is no Python DSL
-    /// syntax that can (directly) produce this node. However, we implement the
-    /// Display string as `q[i]`, although programmers should never see this
-    /// node printed.
-    QubitRef(QubitRef),
+            /// A superposition of qubit literals that may not have uniform
+            /// probabilities. Example syntax:
+            /// ```text
+            /// 0.25*'0' + 0.75*'1'
+            /// ```
+            NonUniformSuperpos(NonUniformSuperpos),
+
+            /// An ensemble of qubit literals that may not have uniform
+            /// probabilities. Example syntax:
+            /// ```text
+            /// 0.25*'0' ^ 0.75*'1'
+            /// ```
+            /// Another example:
+            /// ```text
+            /// '0' ^ '1'
+            /// ```
+            Ensemble(Ensemble),
+
+            /// A classical conditional (ternary) expression. Example syntax:
+            /// ```text
+            /// flip if meas_result else id
+            /// ```
+            Conditional(Conditional),
+
+            /// A qubit literal. Example syntax:
+            /// ```text
+            /// '0' + '1'
+            /// ```
+            QLitExpr(QLitExpr),
+
+            /// A classical bit literal. Example syntax:
+            /// ```text
+            /// bit[4](0b1101)
+            /// ```
+            BitLiteral(BitLiteral),
+
+            /// A reference to a qubit, q_i in Appendix A of arXiv:2404.12603. This is
+            /// only involved in intermediate computations, so there is no Python DSL
+            /// syntax that can (directly) produce this node. However, we implement the
+            /// Display string as `q[i]`, although programmers should never see this
+            /// node printed.
+            QubitRef(QubitRef),
+        }
+    }
 }
 
 impl Expr {
@@ -235,11 +271,51 @@ impl Expr {
             | Expr::NonUniformSuperpos(NonUniformSuperpos { dbg, .. })
             | Expr::Ensemble(Ensemble { dbg, .. })
             | Expr::Conditional(Conditional { dbg, .. })
+            | Expr::QLitExpr(QLitExpr { dbg, .. })
             | Expr::BitLiteral(BitLiteral { dbg, .. }) => dbg.clone(),
 
-            Expr::QLit(qlit) => qlit.get_dbg(),
-
             Expr::QubitRef(_) => None,
+        }
+    }
+
+    /// Called by `gen_rebuild` for the `canonicalize` config. The resulting
+    /// rebuild code is called in the implementation of [`Canonicalize`] trait.
+    pub(crate) fn canonicalize_rewriter(self) -> Self {
+        match self {
+            Expr::Tensor(Tensor { vals, dbg }) => {
+                let vals: Vec<_> = vals
+                    .into_iter()
+                    .filter_map(|val| {
+                        if let Expr::UnitLiteral(_) = val {
+                            None
+                        } else {
+                            Some(val)
+                        }
+                    })
+                    .collect();
+
+                if vals.is_empty() {
+                    Expr::UnitLiteral(UnitLiteral { dbg })
+                } else {
+                    Expr::Tensor(Tensor { vals, dbg })
+                }
+            }
+
+            already_canon @ (Expr::Variable(_)
+            | Expr::UnitLiteral(_)
+            | Expr::EmbedClassical(_)
+            | Expr::Adjoint(_)
+            | Expr::Pipe(_)
+            | Expr::Measure(_)
+            | Expr::Discard(_)
+            | Expr::BasisTranslation(_)
+            | Expr::Predicated(_)
+            | Expr::NonUniformSuperpos(_)
+            | Expr::Ensemble(_)
+            | Expr::Conditional(_)
+            | Expr::QLitExpr(_)
+            | Expr::BitLiteral(_)
+            | Expr::QubitRef(_)) => already_canon,
         }
     }
 }
@@ -261,113 +337,15 @@ impl Trivializable for Expr {
 }
 
 impl Canonicalizable for Expr {
-    fn canonicalize(&self) -> Self {
-        match self {
-            Expr::Adjoint(Adjoint { func, dbg }) => Expr::Adjoint(Adjoint {
-                func: Box::new(func.canonicalize()),
-                dbg: dbg.clone(),
-            }),
-
-            Expr::Pipe(Pipe { lhs, rhs, dbg }) => Expr::Pipe(Pipe {
-                lhs: Box::new(lhs.canonicalize()),
-                rhs: Box::new(rhs.canonicalize()),
-                dbg: dbg.clone(),
-            }),
-
-            Expr::Measure(Measure { basis, dbg }) => Expr::Measure(Measure {
-                basis: basis.canonicalize(),
-                dbg: dbg.clone(),
-            }),
-
-            Expr::Tensor(Tensor { vals, dbg }) => {
-                let canon_vals: Vec<_> = vals
-                    .iter()
-                    .filter_map(|val| {
-                        let canon_val = val.canonicalize();
-                        if let Expr::UnitLiteral(_) = canon_val {
-                            None
-                        } else {
-                            Some(canon_val)
-                        }
-                    })
-                    .collect();
-
-                if canon_vals.is_empty() {
-                    Expr::UnitLiteral(UnitLiteral { dbg: dbg.clone() })
-                } else {
-                    Expr::Tensor(Tensor {
-                        vals: canon_vals,
-                        dbg: dbg.clone(),
-                    })
-                }
-            }
-
-            Expr::BasisTranslation(BasisTranslation { bin, bout, dbg }) => {
-                Expr::BasisTranslation(BasisTranslation {
-                    bin: bin.canonicalize(),
-                    bout: bout.canonicalize(),
-                    dbg: dbg.clone(),
-                })
-            }
-
-            Expr::Predicated(Predicated {
-                then_func,
-                else_func,
-                pred,
-                dbg,
-            }) => Expr::Predicated(Predicated {
-                then_func: Box::new(then_func.canonicalize()),
-                else_func: Box::new(else_func.canonicalize()),
-                pred: pred.canonicalize(),
-                dbg: dbg.clone(),
-            }),
-
-            Expr::NonUniformSuperpos(NonUniformSuperpos { pairs, dbg }) => {
-                Expr::NonUniformSuperpos(NonUniformSuperpos {
-                    pairs: pairs
-                        .iter()
-                        .map(|(prob, qlit)| (*prob, qlit.canonicalize()))
-                        .collect(),
-                    dbg: dbg.clone(),
-                })
-            }
-
-            Expr::Ensemble(Ensemble { pairs, dbg }) => Expr::Ensemble(Ensemble {
-                pairs: pairs
-                    .iter()
-                    .map(|(prob, qlit)| (*prob, qlit.canonicalize()))
-                    .collect(),
-                dbg: dbg.clone(),
-            }),
-
-            Expr::Conditional(Conditional {
-                then_expr,
-                else_expr,
-                cond,
-                dbg,
-            }) => Expr::Conditional(Conditional {
-                then_expr: Box::new(then_expr.canonicalize()),
-                else_expr: Box::new(else_expr.canonicalize()),
-                cond: Box::new(cond.canonicalize()),
-                dbg: dbg.clone(),
-            }),
-
-            Expr::QLit(qlit) => Expr::QLit(qlit.canonicalize()),
-
-            Expr::Variable(_)
-            | Expr::UnitLiteral(_)
-            | Expr::EmbedClassical(_)
-            | Expr::Discard(_)
-            | Expr::BitLiteral(_)
-            | Expr::QubitRef(_) => self.clone(),
-        }
+    fn canonicalize(self) -> Self {
+        rebuild!(Expr, self, canonicalize)
     }
 }
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Expr::Variable(var) => write!(f, "{}", var),
+            Expr::Variable(var) => write!(f, "{}", var), // Defer to impl in ast.rs
             Expr::UnitLiteral(UnitLiteral { .. }) => write!(f, "[]"),
             Expr::EmbedClassical(EmbedClassical {
                 func_name,
@@ -427,8 +405,8 @@ impl fmt::Display for Expr {
                 cond,
                 ..
             }) => write!(f, "({}) if ({}) else ({})", then_expr, cond, else_expr),
-            Expr::QLit(qlit) => write!(f, "{}", qlit),
-            Expr::BitLiteral(blit) => write!(f, "{}", blit),
+            Expr::QLitExpr(QLitExpr { qlit, .. }) => write!(f, "{}", qlit),
+            Expr::BitLiteral(blit) => write!(f, "{}", blit), // Defer to impl in ast.rs
             Expr::QubitRef(QubitRef { index }) => write!(f, "q[{}]", index),
         }
     }
@@ -437,7 +415,7 @@ impl fmt::Display for Expr {
 impl ToPythonCode for Expr {
     fn fmt_py(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Expr::Variable(var) => write!(f, "{}", var),
+            Expr::Variable(Variable { name, .. }) => write!(f, "{}", name),
             Expr::UnitLiteral(UnitLiteral { .. }) => write!(f, "[]"),
             Expr::EmbedClassical(EmbedClassical {
                 func_name,
@@ -537,7 +515,9 @@ impl ToPythonCode for Expr {
                 else_expr.fmt_py(f)?;
                 write!(f, ")")
             }
-            Expr::QLit(qlit) => qlit.fmt_py(f),
+            Expr::QLitExpr(QLitExpr { qlit, .. }) => qlit.fmt_py(f),
+            // This is not completely trivial, so use the Display
+            // implementation from ast.rs.
             Expr::BitLiteral(blit) => write!(f, "{}", blit),
             Expr::QubitRef(QubitRef { index }) => write!(f, "q[{}]", index),
         }
@@ -546,6 +526,12 @@ impl ToPythonCode for Expr {
 
 // ----- Qubit Literals -----
 
+#[gen_rebuild {
+    into_basis_vector(
+        rewrite(into_basis_vector_rewriter),
+        rewrite_to(QLit => Vector),
+    ),
+}]
 #[derive(Debug, Clone, PartialEq)]
 pub enum QLit {
     ZeroQubit {
@@ -585,36 +571,44 @@ impl QLit {
         dbg.clone()
     }
 
-    /// Converts a qubit literal to a basis vector since in the spec, every ql
-    /// is a bv.
-    pub fn convert_to_basis_vector(&self) -> Vector {
-        match self {
-            QLit::ZeroQubit { dbg } => Vector::ZeroVector { dbg: dbg.clone() },
-            QLit::OneQubit { dbg } => Vector::OneVector { dbg: dbg.clone() },
-            QLit::QubitTilt { q, angle_deg, dbg } => Vector::VectorTilt {
-                q: Box::new(q.convert_to_basis_vector()),
-                angle_deg: *angle_deg,
-                dbg: dbg.clone(),
-            },
-            QLit::UniformSuperpos { q1, q2, dbg } => Vector::UniformVectorSuperpos {
-                q1: Box::new(q1.convert_to_basis_vector()),
-                q2: Box::new(q2.convert_to_basis_vector()),
-                dbg: dbg.clone(),
-            },
-            QLit::QubitTensor { qs, dbg } => Vector::VectorTensor {
-                qs: qs.iter().map(QLit::convert_to_basis_vector).collect(),
-                dbg: dbg.clone(),
-            },
-            QLit::QubitUnit { dbg } => Vector::VectorUnit { dbg: dbg.clone() },
+    pub(crate) fn into_basis_vector_rewriter(
+        rewritten: rewrite_ty!(QLit, into_basis_vector),
+    ) -> Vector {
+        rewrite_match! {QLit, into_basis_vector, rewritten,
+            ZeroQubit { dbg } => Vector::ZeroVector { dbg },
+            OneQubit { dbg } => Vector::OneVector { dbg },
+            QubitTilt { q, angle_deg, dbg } => {
+                let q = Box::new(q);
+                Vector::VectorTilt { q, angle_deg, dbg }
+            }
+            UniformSuperpos { q1, q2, dbg } => {
+                let q1 = Box::new(q1);
+                let q2 = Box::new(q2);
+                Vector::UniformVectorSuperpos { q1, q2, dbg }
+            }
+            QubitTensor { qs, dbg } => Vector::VectorTensor { qs, dbg },
+            QubitUnit { dbg } => Vector::VectorUnit { dbg },
         }
+    }
+
+    /// Converts an owned qubit literal into a basis vector since in
+    /// the spec, every ql is a bv.
+    pub fn into_basis_vector(self) -> Vector {
+        rebuild!(QLit, self, into_basis_vector)
+    }
+
+    /// Converts a reference to a qubit literal into a basis vector since in
+    /// the spec, every ql is a bv.
+    pub fn to_basis_vector(&self) -> Vector {
+        self.clone().into_basis_vector()
     }
 
     /// Returns an equivalent qubit literal in canon form (see
     /// Vector::canonicalize()).
-    pub fn canonicalize(&self) -> QLit {
-        self.convert_to_basis_vector()
+    pub fn canonicalize(self) -> QLit {
+        self.into_basis_vector()
             .canonicalize()
-            .convert_to_qubit_literal()
+            .try_into_qubit_literal()
             .expect(concat!(
                 "converting a qlit to a basis vector should allow converting ",
                 "back to a qlit"
@@ -701,6 +695,22 @@ impl fmt::Display for VectorAtomKind {
     }
 }
 
+#[gen_rebuild {
+    try_into_qubit_literal(
+        option,
+        rewrite(try_into_qubit_literal_rewriter),
+        rewrite_to(Vector => QLit),
+    ),
+    into_strip_dbg(
+        rewrite(into_strip_dbg_rewriter),
+    ),
+    into_explicit(
+        rewrite(into_explicit_rewriter),
+    ),
+    canonicalize(
+        rewrite(canonicalize_rewriter),
+    ),
+}]
 #[derive(Debug, Clone)]
 pub enum Vector {
     /// The first standard basis vector, |0⟩. Example syntax:
@@ -780,67 +790,64 @@ impl Vector {
 
     /// Converts this vector into a qubit literal. Returns None if this vector
     /// contains any padding or target atoms.
-    pub fn convert_to_qubit_literal(&self) -> Option<QLit> {
-        match self {
-            Vector::ZeroVector { dbg } => Some(QLit::ZeroQubit { dbg: dbg.clone() }),
-            Vector::OneVector { dbg } => Some(QLit::OneQubit { dbg: dbg.clone() }),
-            Vector::VectorTilt { q, angle_deg, dbg } => {
-                (**q).convert_to_qubit_literal().map(|qlq| QLit::QubitTilt {
-                    q: Box::new(qlq),
-                    angle_deg: *angle_deg,
-                    dbg: dbg.clone(),
-                })
-            }
-            Vector::UniformVectorSuperpos { q1, q2, dbg } => (**q1)
-                .convert_to_qubit_literal()
-                .zip((**q2).convert_to_qubit_literal())
-                .map(|(qlq1, qlq2)| QLit::UniformSuperpos {
-                    q1: Box::new(qlq1),
-                    q2: Box::new(qlq2),
-                    dbg: dbg.clone(),
-                }),
-            Vector::VectorTensor { qs, dbg } => qs
-                .iter()
-                .map(Vector::convert_to_qubit_literal)
-                .collect::<Option<Vec<QLit>>>()
-                .map(|qlqs| QLit::QubitTensor {
-                    qs: qlqs,
-                    dbg: dbg.clone(),
-                }),
-            Vector::VectorUnit { dbg } => Some(QLit::QubitUnit { dbg: dbg.clone() }),
+    pub fn try_into_qubit_literal(self) -> Option<QLit> {
+        rebuild!(Vector, self, try_into_qubit_literal)
+    }
 
-            Vector::PadVector { .. } | Vector::TargetVector { .. } => None,
+    pub(crate) fn try_into_qubit_literal_rewriter(
+        rewritten: rewrite_ty!(Vector, try_into_qubit_literal),
+    ) -> Option<QLit> {
+        rewrite_match! {Vector, try_into_qubit_literal, rewritten,
+            ZeroVector { dbg } => Some(QLit::ZeroQubit { dbg }),
+
+            OneVector { dbg } => Some(QLit::OneQubit { dbg }),
+
+            VectorTilt { q, angle_deg, dbg } => {
+                let q = Box::new(q);
+                Some(QLit::QubitTilt { q, angle_deg, dbg })
+            }
+
+            UniformVectorSuperpos { q1, q2, dbg } => {
+                let q1 = Box::new(q1);
+                let q2 = Box::new(q2);
+                Some(QLit::UniformSuperpos { q1, q2, dbg })
+            }
+
+            VectorTensor { qs, dbg } => Some(QLit::QubitTensor { qs, dbg }),
+
+            VectorUnit { dbg } => Some(QLit::QubitUnit { dbg }),
+
+            PadVector { .. } | TargetVector { .. } => None,
         }
     }
 
     /// Returns a version of this vector with no debug info. Useful for
     /// comparing vectors/bases without considering debug info.
-    pub fn strip_dbg(&self) -> Vector {
+    pub fn into_strip_dbg(self) -> Self {
+        rebuild!(Vector, self, into_strip_dbg)
+    }
+
+    pub(crate) fn into_strip_dbg_rewriter(self) -> Self {
         match self {
             Vector::ZeroVector { .. } => Vector::ZeroVector { dbg: None },
             Vector::OneVector { .. } => Vector::OneVector { dbg: None },
             Vector::PadVector { .. } => Vector::PadVector { dbg: None },
             Vector::TargetVector { .. } => Vector::TargetVector { dbg: None },
             Vector::VectorTilt { q, angle_deg, .. } => Vector::VectorTilt {
-                q: Box::new(q.strip_dbg()),
-                angle_deg: *angle_deg,
+                q,
+                angle_deg,
                 dbg: None,
             },
-            Vector::UniformVectorSuperpos { q1, q2, .. } => Vector::UniformVectorSuperpos {
-                q1: Box::new(q1.strip_dbg()),
-                q2: Box::new(q2.strip_dbg()),
-                dbg: None,
-            },
-            Vector::VectorTensor { qs, .. } => Vector::VectorTensor {
-                qs: qs.iter().map(Vector::strip_dbg).collect(),
-                dbg: None,
-            },
+            Vector::UniformVectorSuperpos { q1, q2, .. } => {
+                Vector::UniformVectorSuperpos { q1, q2, dbg: None }
+            }
+            Vector::VectorTensor { qs, .. } => Vector::VectorTensor { qs, dbg: None },
             Vector::VectorUnit { .. } => Vector::VectorUnit { dbg: None },
         }
     }
 
-    /// Returns whether vectors are equivalent, using `strip_dbg` and
-    /// `angles_are_approx_equal`
+    /// Returns whether vectors are equivalent, using
+    /// [`Vector::into_strip_dbg]` and [`angles_are_approx_equal`]
     pub fn approx_equal(&self, other: &Vector) -> bool {
         match (self, other) {
             (Vector::ZeroVector { .. }, Vector::ZeroVector { .. }) => true,
@@ -989,51 +996,49 @@ impl Vector {
         }
     }
 
-    /// Returns a version of this vector without any '?' or '_' atoms. Assumes
-    /// the original vector is well-typed.
-    pub fn make_explicit(&self) -> Vector {
+    /// Returns a version of a vector reference without any '?' or '_' atoms.
+    /// Assumes the original vector is well-typed.
+    pub fn to_explicit(&self) -> Self {
+        self.clone().into_explicit()
+    }
+
+    /// Returns a version of an owned vector without any '?' or '_' atoms.
+    /// Assumes the original vector is well-typed.
+    pub fn into_explicit(self) -> Self {
+        rebuild!(Vector, self, into_explicit)
+    }
+
+    pub(crate) fn into_explicit_rewriter(self) -> Self {
         match self {
-            Vector::ZeroVector { .. } | Vector::OneVector { .. } | Vector::VectorUnit { .. } => {
-                self.clone()
-            }
-            Vector::PadVector { dbg } | Vector::TargetVector { dbg } => {
-                Vector::VectorUnit { dbg: dbg.clone() }
-            }
+            Vector::PadVector { dbg } | Vector::TargetVector { dbg } => Vector::VectorUnit { dbg },
+
             Vector::VectorTilt { q, angle_deg, dbg } => {
-                let q_explicit = q.make_explicit();
-                if let Vector::VectorUnit { .. } = q_explicit {
-                    q_explicit
+                if let Vector::VectorUnit { dbg } = *q {
+                    Vector::VectorUnit { dbg }
                 } else {
-                    Vector::VectorTilt {
-                        q: Box::new(q_explicit),
-                        angle_deg: *angle_deg,
-                        dbg: dbg.clone(),
-                    }
+                    Vector::VectorTilt { q, angle_deg, dbg }
                 }
             }
-            Vector::UniformVectorSuperpos { q1, q2, dbg } => Vector::UniformVectorSuperpos {
-                q1: Box::new(q1.make_explicit()),
-                q2: Box::new(q2.make_explicit()),
-                dbg: dbg.clone(),
-            },
+
             Vector::VectorTensor { qs, dbg } => {
-                let qs_explicit: Vec<_> = qs
-                    .iter()
-                    .map(Vector::make_explicit)
+                let qs: Vec<_> = qs
+                    .into_iter()
                     .filter(|vec| !matches!(vec, Vector::VectorUnit { .. }))
                     .collect();
                 // Make an assumption that this is well-formed
-                if qs_explicit.is_empty() {
-                    Vector::VectorUnit { dbg: dbg.clone() }
-                } else if qs_explicit.len() == 1 {
-                    qs_explicit[0].clone()
+                if qs.is_empty() {
+                    Vector::VectorUnit { dbg }
+                } else if qs.len() == 1 {
+                    qs.into_iter().next().expect("qs is empty yet has length 1")
                 } else {
-                    Vector::VectorTensor {
-                        qs: qs_explicit,
-                        dbg: dbg.clone(),
-                    }
+                    Vector::VectorTensor { qs, dbg }
                 }
             }
+
+            already_explicit @ (Vector::ZeroVector { .. }
+            | Vector::OneVector { .. }
+            | Vector::VectorUnit { .. }
+            | Vector::UniformVectorSuperpos { .. }) => already_explicit,
         }
     }
 
@@ -1158,72 +1163,63 @@ impl Vector {
     ///    and
     ///        (q1 + q2) + -(q1 - q2) -> q1
     /// Assumes this vector is well-typed.
-    pub fn canonicalize(&self) -> Vector {
-        match self {
-            Vector::ZeroVector { .. }
-            | Vector::OneVector { .. }
-            | Vector::PadVector { .. }
-            | Vector::TargetVector { .. }
-            | Vector::VectorUnit { .. } => self.clone(),
+    pub fn canonicalize(self) -> Vector {
+        rebuild!(Vector, self, canonicalize)
+    }
 
+    pub(crate) fn canonicalize_rewriter(self) -> Self {
+        match self {
             Vector::VectorTilt { q, angle_deg, dbg } => {
-                let q_canon = q.canonicalize();
                 if let Vector::VectorTilt {
                     q: q_inner,
                     angle_deg: angle_deg_inner,
                     ..
-                } = q_canon
+                } = *q
                 {
                     let angle_deg_sum = angle_deg + angle_deg_inner;
                     if angle_is_approx_zero(canon_angle(angle_deg_sum)) {
-                        *q_inner.clone()
+                        *q_inner
                     } else {
                         Vector::VectorTilt {
-                            q: q_inner.clone(),
+                            q: q_inner,
                             angle_deg: canon_angle(angle_deg_sum),
-                            dbg: dbg.clone(),
+                            dbg,
                         }
                     }
-                } else if angle_is_approx_zero(canon_angle(*angle_deg)) {
-                    q_canon
+                } else if angle_is_approx_zero(canon_angle(angle_deg)) {
+                    *q
                 } else {
                     Vector::VectorTilt {
-                        q: Box::new(q_canon),
-                        angle_deg: canon_angle(*angle_deg),
-                        dbg: dbg.clone(),
+                        q,
+                        angle_deg: canon_angle(angle_deg),
+                        dbg,
                     }
                 }
             }
 
             Vector::UniformVectorSuperpos { q1, q2, dbg } => {
-                let q1_canon = q1.canonicalize();
-                let q2_canon = q2.canonicalize();
-
-                let (first_q, second_q) = if q2_canon < q1_canon {
-                    (q2_canon, q1_canon)
-                } else {
-                    (q1_canon, q2_canon)
-                };
+                let (first_q, second_q) = if *q2 < *q1 { (*q2, *q1) } else { (*q1, *q2) };
 
                 if let Some(vec) = Vector::interfere(&first_q, &second_q) {
                     // Call canonicalize() here in case there is
                     // e.g. a nested tilt
+                    // TODO: gen_rebuild needs to allow rewriters to signal a
+                    //       "retrigger" or "retry" somehow instead of doing this.
                     vec.canonicalize()
                 } else {
                     Vector::UniformVectorSuperpos {
                         q1: Box::new(first_q),
                         q2: Box::new(second_q),
-                        dbg: dbg.clone(),
+                        dbg,
                     }
                 }
             }
 
             Vector::VectorTensor { qs, dbg } => {
-                let vecs_canon: Vec<_> = qs.iter().map(Vector::canonicalize).collect();
                 let mut new_qs = vec![];
                 let mut angle_deg_sum = 0.0;
                 let mut new_tilt_dbg = None;
-                for vec in &vecs_canon {
+                for vec in qs {
                     if let Vector::VectorTilt {
                         q,
                         angle_deg,
@@ -1231,17 +1227,17 @@ impl Vector {
                     } = vec
                     {
                         angle_deg_sum += angle_deg;
-                        new_tilt_dbg = new_tilt_dbg.or_else(|| tilt_dbg.clone());
+                        new_tilt_dbg = new_tilt_dbg.or(tilt_dbg);
 
-                        if let Vector::VectorUnit { .. } = **q {
+                        if let Vector::VectorUnit { .. } = *q {
                             // Skip units
-                        } else if let Vector::VectorTensor { qs: inner_qs, .. } = &**q {
+                        } else if let Vector::VectorTensor { qs: inner_qs, .. } = *q {
                             // No need to look for tilts here because we can
                             // inductively assume they were moved to the
                             // outside and we just found them
-                            new_qs.extend_from_slice(inner_qs);
+                            new_qs.extend(inner_qs);
                         } else {
-                            new_qs.push(*q.clone());
+                            new_qs.push(*q);
                         }
                     } else if let Vector::VectorUnit { .. } = vec {
                         // Skip units
@@ -1249,16 +1245,19 @@ impl Vector {
                         // No need to look for tilts here because we can
                         // inductively assume they would've been moved to the
                         // outside and found above
-                        new_qs.extend_from_slice(inner_qs);
+                        new_qs.extend(inner_qs);
                     } else {
-                        new_qs.push(vec.clone());
+                        new_qs.push(vec);
                     }
                 }
 
                 let new_tensor = if new_qs.is_empty() {
                     Vector::VectorUnit { dbg: dbg.clone() }
                 } else if new_qs.len() == 1 {
-                    new_qs[0].clone()
+                    new_qs
+                        .into_iter()
+                        .next()
+                        .expect("new_qs is empty yet has length 1")
                 } else {
                     Vector::VectorTensor {
                         qs: new_qs,
@@ -1272,20 +1271,26 @@ impl Vector {
                     Vector::VectorTilt {
                         q: Box::new(new_tensor),
                         angle_deg: canon_angle(angle_deg_sum),
-                        dbg: new_tilt_dbg.or_else(|| dbg.clone()),
+                        dbg: new_tilt_dbg.or(dbg),
                     }
                 }
             }
+
+            already_canon @ (Vector::ZeroVector { .. }
+            | Vector::OneVector { .. }
+            | Vector::PadVector { .. }
+            | Vector::TargetVector { .. }
+            | Vector::VectorUnit { .. }) => already_canon,
         }
     }
 
     /// Removes phases (except those directly inside superpositions). This is
     /// intended for use in span equivalence checking. The vector should be
     /// type-checked and canonicalized first.
-    pub fn normalize(&self) -> Vector {
+    pub fn normalize(self) -> Vector {
         match self {
-            Vector::VectorTilt { q, .. } => (**q).clone(),
-            _ => self.clone(),
+            Vector::VectorTilt { q, .. } => *q,
+            already_normal => already_normal,
         }
     }
 
@@ -1316,11 +1321,11 @@ impl Vector {
     /// Converts a Vector into a Rust Vec of Vectors to remove
     /// VectorTensor and VectorUnits from the state.
     /// Similar to Basis::to_vec
-    pub fn to_vec(&self) -> Vec<Vector> {
+    pub fn to_vec(self) -> Vec<Vector> {
         match self {
-            Vector::VectorTensor { qs, .. } => qs.clone(),
+            Vector::VectorTensor { qs, .. } => qs,
             Vector::VectorUnit { .. } => vec![],
-            _ => vec![self.clone()],
+            other => vec![other],
         }
     }
 }
@@ -1525,6 +1530,15 @@ impl ToPythonCode for Vector {
 
 // ----- Basis -----
 
+#[gen_rebuild {
+    into_strip_dbg(
+        rewrite(into_strip_dbg_rewriter),
+        recurse_attrs,
+    ),
+    canonicalize(
+        recurse_attrs,
+    ),
+}]
 #[derive(Debug, Clone, PartialEq)]
 pub enum BasisGenerator {
     /// A revolve generator, used to define the Fourier basis. Example syntax:
@@ -1541,13 +1555,15 @@ pub enum BasisGenerator {
 impl BasisGenerator {
     /// Returns a version of this basis generator with no debug info. Useful
     /// for comparing vectors/bases without considering debug info.
-    pub fn strip_dbg(&self) -> BasisGenerator {
+    pub fn into_strip_dbg(self) -> Self {
+        rebuild!(BasisGenerator, self, into_strip_dbg)
+    }
+
+    pub(crate) fn into_strip_dbg_rewriter(self) -> Self {
         match self {
-            BasisGenerator::Revolve { v1, v2, dbg: _ } => BasisGenerator::Revolve {
-                v1: v1.strip_dbg(),
-                v2: v2.strip_dbg(),
-                dbg: None,
-            },
+            BasisGenerator::Revolve { v1, v2, dbg: _ } => {
+                BasisGenerator::Revolve { v1, v2, dbg: None }
+            }
         }
     }
 
@@ -1568,14 +1584,8 @@ impl BasisGenerator {
     }
 
     /// Returns this `BasisGenerator` with any contained vectors canonicalized.
-    pub fn canonicalize(&self) -> BasisGenerator {
-        match self {
-            BasisGenerator::Revolve { v1, v2, dbg } => BasisGenerator::Revolve {
-                v1: v1.canonicalize(),
-                v2: v2.canonicalize(),
-                dbg: dbg.clone(),
-            },
-        }
+    pub fn canonicalize(self) -> Self {
+        rebuild!(BasisGenerator, self, canonicalize)
     }
 }
 
@@ -1601,6 +1611,24 @@ impl ToPythonCode for BasisGenerator {
     }
 }
 
+#[gen_rebuild {
+    into_strip_dbg(
+        rewrite(into_strip_dbg_rewriter),
+        recurse_attrs,
+    ),
+    into_explicit(
+        rewrite(into_explicit_rewriter),
+        recurse_attrs,
+    ),
+    canonicalize(
+        rewrite(canonicalize_rewriter),
+        recurse_attrs,
+    ),
+    normalize(
+        rewrite(normalize_rewriter),
+        recurse_attrs,
+    ),
+}]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Basis {
     /// A basis literal. Example syntax:
@@ -1633,6 +1661,7 @@ pub enum Basis {
     /// ```
     ApplyBasisGenerator {
         basis: Box<Basis>,
+        #[gen_rebuild::skip_recurse(into_explicit, normalize)]
         generator: BasisGenerator,
         dbg: Option<DebugLoc>,
     },
@@ -1656,29 +1685,29 @@ impl Basis {
 
     /// Returns a version of this basis with no debug info. Useful for
     /// comparing vectors/bases without considering debug info.
-    pub fn strip_dbg(&self) -> Basis {
+    pub fn into_strip_dbg(self) -> Self {
+        rebuild!(Basis, self, into_strip_dbg)
+    }
+
+    pub(crate) fn into_strip_dbg_rewriter(self) -> Self {
         match self {
-            Basis::BasisLiteral { vecs, .. } => Basis::BasisLiteral {
-                vecs: vecs.iter().map(Vector::strip_dbg).collect(),
-                dbg: None,
-            },
-            Basis::EmptyBasisLiteral { .. } => Basis::EmptyBasisLiteral { dbg: None },
-            Basis::BasisTensor { bases, .. } => Basis::BasisTensor {
-                bases: bases.iter().map(Basis::strip_dbg).collect(),
-                dbg: None,
-            },
+            Basis::BasisLiteral { vecs, dbg: _ } => Basis::BasisLiteral { vecs, dbg: None },
+            Basis::EmptyBasisLiteral { dbg: _ } => Basis::EmptyBasisLiteral { dbg: None },
+            Basis::BasisTensor { bases, dbg: _ } => Basis::BasisTensor { bases, dbg: None },
             Basis::ApplyBasisGenerator {
-                basis, generator, ..
+                basis,
+                generator,
+                dbg: _,
             } => Basis::ApplyBasisGenerator {
-                basis: Box::new(basis.strip_dbg()),
-                generator: generator.strip_dbg(),
+                basis,
+                generator,
                 dbg: None,
             },
         }
     }
 
-    /// Returns whether bases are equivalent, using `strip_dbg` and
-    /// `angles_are_approx_equal`
+    /// Returns whether bases are equivalent, using [`Basis::into_strip_dbg`]
+    /// and [`angles_are_approx_equal`].
     pub fn approx_equal(&self, other: &Basis) -> bool {
         match (self, other) {
             (Basis::EmptyBasisLiteral { .. }, Basis::EmptyBasisLiteral { .. }) => true,
@@ -1819,61 +1848,57 @@ impl Basis {
         }
     }
 
-    /// Returns a version of this basis without any '?' or '_' atoms. Assumes
-    /// the original basis is well-typed.
-    pub fn make_explicit(&self) -> Basis {
+    /// Returns a version of a basis reference without any '?' or '_' atoms.
+    /// Assumes the original basis is well-typed.
+    pub fn to_explicit(&self) -> Self {
+        self.clone().into_explicit()
+    }
+
+    /// Returns a version of an owned basis without any '?' or '_' atoms.
+    /// Assumes the original basis is well-typed.
+    pub fn into_explicit(self) -> Self {
+        rebuild!(Basis, self, into_explicit)
+    }
+
+    pub(crate) fn into_explicit_rewriter(self) -> Self {
         match self {
             Basis::BasisLiteral { vecs, dbg } => {
                 // This is a little bit overpowered: according to the
                 // orthogonality rules, a basis literal can contain at most one
                 // lonely '?' or '_'. (That is, {'?'} would typecheck but {'?',
                 // '?'+'?' would not.) This code will do the job, though.
-                let vecs_explicit: Vec<_> = vecs
-                    .iter()
-                    .map(Vector::make_explicit)
+                let vecs: Vec<_> = vecs
+                    .into_iter()
                     .filter(|vec| !matches!(vec, Vector::VectorUnit { .. }))
                     .collect();
-                if vecs_explicit.is_empty() {
-                    Basis::EmptyBasisLiteral { dbg: dbg.clone() }
+                if vecs.is_empty() {
+                    Basis::EmptyBasisLiteral { dbg }
                 } else {
-                    Basis::BasisLiteral {
-                        vecs: vecs_explicit,
-                        dbg: dbg.clone(),
-                    }
+                    Basis::BasisLiteral { vecs, dbg }
                 }
             }
 
-            Basis::EmptyBasisLiteral { .. } => self.clone(),
-
             Basis::BasisTensor { bases, dbg } => {
-                let bases_explicit: Vec<_> = bases
-                    .iter()
-                    .map(Basis::make_explicit)
+                let bases: Vec<_> = bases
+                    .into_iter()
                     .filter(|basis| !matches!(basis, Basis::EmptyBasisLiteral { .. }))
                     .collect();
                 // Make an assumption that this is well-formed
-                if bases_explicit.is_empty() {
-                    Basis::EmptyBasisLiteral { dbg: dbg.clone() }
-                } else if bases_explicit.len() == 1 {
-                    bases_explicit[0].clone()
+                if bases.is_empty() {
+                    Basis::EmptyBasisLiteral { dbg }
+                } else if bases.len() == 1 {
+                    bases
+                        .into_iter()
+                        .next()
+                        .expect("bases is empty yet has length 1")
                 } else {
-                    Basis::BasisTensor {
-                        bases: bases_explicit,
-                        dbg: dbg.clone(),
-                    }
+                    Basis::BasisTensor { bases, dbg }
                 }
             }
 
             // The '?' and '_' atoms are banned in basis generators
-            Basis::ApplyBasisGenerator {
-                basis,
-                generator,
-                dbg,
-            } => Basis::ApplyBasisGenerator {
-                basis: Box::new(basis.make_explicit()),
-                generator: generator.clone(),
-                dbg: dbg.clone(),
-            },
+            already_explicit @ (Basis::EmptyBasisLiteral { .. }
+            | Basis::ApplyBasisGenerator { .. }) => already_explicit,
         }
     }
 
@@ -1883,29 +1908,27 @@ impl Basis {
     /// 3. No tensor product contains another tensor product
     /// 4. No basis literal consistingly only of an empty vector, {[]}, are
     ///    replaced with an empty basis literal []
-    pub fn canonicalize(&self) -> Basis {
-        match self {
-            Basis::EmptyBasisLiteral { .. } => self.clone(),
+    pub fn canonicalize(self) -> Self {
+        rebuild!(Basis, self, canonicalize)
+    }
 
+    pub(crate) fn canonicalize_rewriter(self) -> Self {
+        match self {
             Basis::BasisLiteral { vecs, dbg } => {
-                let canon_vecs: Vec<_> = vecs.iter().map(Vector::canonicalize).collect();
-                if canon_vecs.len() == 1 && matches!(&canon_vecs[0], Vector::VectorUnit { .. }) {
-                    Basis::EmptyBasisLiteral { dbg: dbg.clone() }
+                if vecs.len() == 1 && matches!(&vecs[0], Vector::VectorUnit { .. }) {
+                    Basis::EmptyBasisLiteral { dbg }
                 } else {
-                    Basis::BasisLiteral {
-                        vecs: canon_vecs,
-                        dbg: dbg.clone(),
-                    }
+                    Basis::BasisLiteral { vecs, dbg }
                 }
             }
 
             Basis::BasisTensor { bases, dbg } => {
                 let bases_canon: Vec<_> = bases
-                    .iter()
-                    .map(Basis::canonicalize)
+                    .into_iter()
                     .flat_map(|basis| match basis {
-                        Basis::BasisLiteral { .. } | Basis::ApplyBasisGenerator { .. } => {
-                            vec![basis]
+                        solo_basis @ (Basis::BasisLiteral { .. }
+                        | Basis::ApplyBasisGenerator { .. }) => {
+                            vec![solo_basis]
                         }
                         Basis::EmptyBasisLiteral { .. } => vec![],
                         Basis::BasisTensor {
@@ -1914,43 +1937,36 @@ impl Basis {
                     })
                     .collect();
                 if bases_canon.is_empty() {
-                    Basis::EmptyBasisLiteral { dbg: dbg.clone() }
+                    Basis::EmptyBasisLiteral { dbg }
                 } else if bases_canon.len() == 1 {
-                    bases_canon[0].clone()
+                    bases_canon.into_iter().next().expect("basis is empty")
                 } else {
                     Basis::BasisTensor {
                         bases: bases_canon,
-                        dbg: dbg.clone(),
+                        dbg,
                     }
                 }
             }
 
-            Basis::ApplyBasisGenerator {
-                basis,
-                generator,
-                dbg,
-            } => Basis::ApplyBasisGenerator {
-                basis: Box::new(basis.canonicalize()),
-                generator: generator.canonicalize(),
-                dbg: dbg.clone(),
-            },
+            already_canon @ (Basis::EmptyBasisLiteral { .. }
+            | Basis::ApplyBasisGenerator { .. }) => already_canon,
         }
     }
 
     /// Converts to a vector of basis elements in order.
-    pub fn to_vec(&self) -> Vec<Basis> {
+    pub fn to_vec(self) -> Vec<Basis> {
         match self {
             Basis::EmptyBasisLiteral { .. } => vec![],
 
-            Basis::BasisLiteral { .. } | Basis::ApplyBasisGenerator { .. } => vec![self.clone()],
+            Basis::BasisTensor { bases, .. } => bases,
 
-            Basis::BasisTensor { bases, .. } => bases.clone(),
+            other @ (Basis::BasisLiteral { .. } | Basis::ApplyBasisGenerator { .. }) => vec![other],
         }
     }
 
     /// Converts to a stack of basis elements such that the first element
     /// popped is the leftmost.
-    pub fn to_stack(&self) -> Vec<Basis> {
+    pub fn to_stack(self) -> Vec<Basis> {
         let mut vec = self.to_vec();
         vec.reverse();
         vec
@@ -1989,25 +2005,22 @@ impl Basis {
     /// but is not necessarily equivalent. This is intended for use in span
     /// equivalence checking. The basis should be type-checked and
     /// canonicalized first.
-    pub fn normalize(&self) -> Basis {
-        match self {
-            // Pass through basis generators unchanged because they should be
-            // treated as a giant inseparable basis
-            Basis::EmptyBasisLiteral { .. } | Basis::ApplyBasisGenerator { .. } => self.clone(),
+    pub fn normalize(self) -> Self {
+        rebuild!(Basis, self, normalize)
+    }
 
-            Basis::BasisLiteral { vecs, dbg } => {
-                let mut norm_vecs: Vec<_> = vecs.iter().map(Vector::normalize).collect();
-                norm_vecs.sort();
-                Basis::BasisLiteral {
-                    vecs: norm_vecs,
-                    dbg: dbg.clone(),
-                }
+    pub(crate) fn normalize_rewriter(self) -> Self {
+        match self {
+            Basis::BasisLiteral { mut vecs, dbg } => {
+                vecs.sort();
+                Basis::BasisLiteral { vecs, dbg }
             }
 
-            Basis::BasisTensor { bases, dbg } => Basis::BasisTensor {
-                bases: bases.iter().map(Basis::normalize).collect(),
-                dbg: dbg.clone(),
-            },
+            // Pass through basis generators unchanged because they should be
+            // treated as a giant inseparable basis
+            already_normal @ (Basis::EmptyBasisLiteral { .. }
+            | Basis::ApplyBasisGenerator { .. }
+            | Basis::BasisTensor { .. }) => already_normal,
         }
     }
 }

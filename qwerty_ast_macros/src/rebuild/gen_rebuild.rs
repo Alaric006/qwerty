@@ -4,9 +4,114 @@ use crate::rebuild::{attrs, parse, tys};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote_spanned;
 use syn::{
-    Error, Field, Fields, FieldsNamed, Ident, ItemEnum, Path, PathArguments, PathSegment, Type,
-    TypePath, Variant, punctuated::Pair,
+    Error, Field, FieldMutability, Fields, FieldsNamed, Ident, ItemEnum, ItemStruct, Token, Type,
+    Variant, Visibility,
 };
+
+/// Represents the way fields are held in an enum. See examples below.
+#[derive(Debug, Clone, Copy)]
+pub enum EnumFieldKind {
+    /// Fields are defined inline in struct variants as follows:
+    /// ```
+    /// enum Expr {
+    ///     Constant { val: u32 },
+    ///     Add { lhs: Box<Expr>, rhs: Box<Expr> },
+    /// }
+    /// ```
+    InlineStructs,
+
+    /// Fields are defined as single-entry tuple variants containing separate
+    /// struct types as follows:
+    /// ```
+    /// struct Constant { val: u32 }
+    /// struct Add { lhs: Box<Expr>, rhs: Box<Expr> }
+    ///
+    /// enum Expr {
+    ///     Constant(Constant),
+    ///     Add(Add),
+    /// }
+    /// ```
+    ExternalStructs,
+}
+
+/// Holds details about the very enum we are rebuilding. The reason we do not
+/// use an ordinary [`ItemEnum`] here is that in the case of
+/// [`crate::gen_rebuild_structs`], the variant fields are spread across many
+/// separate [`ItemStruct`]s. It is easier to collect all of the info in one
+/// place: this struct.
+pub struct TheEnum {
+    pub span: Span,
+    pub field_kind: EnumFieldKind,
+    pub ident: Ident,
+    pub variants: Vec<(Ident, Fields)>,
+}
+
+impl TheEnum {
+    /// Gather enum metadata from an enum with structs defined inline inside
+    /// each variant.
+    pub fn from_enum_with_internal_structs(enum_item: &ItemEnum) -> Self {
+        let variants = enum_item
+            .variants
+            .iter()
+            .map(|variant| {
+                let Variant {
+                    ident: variant_ident,
+                    fields: variant_fields,
+                    ..
+                } = variant;
+                (variant_ident.clone(), variant_fields.clone())
+            })
+            .collect();
+
+        TheEnum {
+            span: enum_item.ident.span(),
+            field_kind: EnumFieldKind::InlineStructs,
+            ident: enum_item.ident.clone(),
+            variants,
+        }
+    }
+
+    /// Gather enum metadata from an enum AST node and a separate array of
+    /// struct AST nodes representing variants.
+    pub fn from_enum_and_external_structs(
+        enum_item: &ItemEnum,
+        variant_structs: &[ItemStruct],
+    ) -> Result<Self, Error> {
+        let span = enum_item.ident.span();
+        let field_kind = EnumFieldKind::ExternalStructs;
+        let ident = enum_item.ident.clone();
+
+        let sorted_variant_structs = {
+            let mut sorted_variant_structs: Vec<_> = variant_structs.into_iter().collect();
+            sorted_variant_structs.sort_by_key(|ItemStruct { ident, .. }| ident);
+            sorted_variant_structs
+        };
+        let variants = enum_item
+            .variants
+            .iter()
+            .map(|Variant { ident, .. }| {
+                if let Ok(struct_idx) = sorted_variant_structs
+                    .binary_search_by_key(&ident, |ItemStruct { ident, .. }| ident)
+                {
+                    let ItemStruct { fields, .. } = &sorted_variant_structs[struct_idx];
+                    Ok((ident.clone(), fields.clone()))
+                } else {
+                    Err(Error::new(
+                        span,
+                        format!("Variant {} is missing a struct", ident),
+                    ))
+                }
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+
+        Ok(TheEnum {
+            span,
+            field_kind,
+            ident,
+            variants,
+        })
+    }
+}
 
 impl parse::RebuildConfig {
     /// Returns `Some(ty')` if the `rewrite_to` option specifies that `ty`
@@ -45,37 +150,35 @@ impl parse::RebuildConfig {
     fn rewrite_ty_if_needed(&self, ty: Type) -> Type {
         self.rewrite_ty(&ty).unwrap_or(ty)
     }
-}
 
-/// Removes any attributes starting with `gen_rebuild::*` from this field and
-/// rewrites its type with `config` to respect `rewrite_to`. Also initially
-/// unboxes types if requested (i.e., replaces any `Box<T>` with `T`).
-fn strip_our_attrs_and_rewrite_field_ty(
-    config: &parse::RebuildConfig,
-    unbox: bool,
-    field: Field,
-) -> Field {
-    let Field {
-        attrs,
-        vis,
-        mutability,
-        ident,
-        colon_token,
-        ty,
-    } = attrs::strip_our_attrs_from_field(field);
-    let unboxed_ty = if unbox {
-        tys::ty_as_box(&ty).cloned().unwrap_or(ty)
-    } else {
-        ty
-    };
-    let ty = config.rewrite_ty_if_needed(unboxed_ty);
-    Field {
-        attrs,
-        vis,
-        mutability,
-        ident,
-        colon_token,
-        ty,
+    /// Removes any attributes starting with `gen_rebuild::*` from this field,
+    /// rewrites its type with `config` to respect `rewrite_to`, and removes field
+    /// visibility levels. Also initially unboxes types if requested (i.e.,
+    /// replaces any `Box<T>` with `T`).
+    fn strip_our_attrs_and_rewrite_field_ty(&self, unbox: bool, field: Field) -> Field {
+        let Field {
+            attrs,
+            vis,
+            mutability,
+            ident,
+            colon_token,
+            ty,
+        } = attrs::strip_our_attrs_and_vis_from_field(field);
+
+        let unboxed_ty = if unbox {
+            tys::ty_as_box(&ty).cloned().unwrap_or(ty)
+        } else {
+            ty
+        };
+        let ty = self.rewrite_ty_if_needed(unboxed_ty);
+        Field {
+            attrs,
+            vis,
+            mutability,
+            ident,
+            colon_token,
+            ty,
+        }
     }
 }
 
@@ -90,7 +193,11 @@ fn recurse_and_rebuild_attr(
     unpacked_idents: &Vec<Ident>,
     move_assignments: &Vec<TokenStream2>,
 ) -> TokenStream2 {
-    if let Some(inner_ty) = tys::ty_as_box(attr_ty) {
+    if tys::should_skip_attr_ty(attr_ty) {
+        quote_spanned! {span=>
+            #attr_ident
+        }
+    } else if let Some(inner_ty) = tys::ty_as_box(attr_ty) {
         let recurse_boxed_elem = recurse_and_rebuild_attr(
             config,
             span,
@@ -181,6 +288,12 @@ fn recurse_and_rebuild_attr(
                             .into_iter()
                             .unzip()
                         }
+                    } else if config.option {
+                        quote_spanned! {span=>
+                            .collect::<Option<Vec<_>>>()?
+                            .into_iter()
+                            .unzip()
+                        }
                     } else {
                         quote_spanned! {span=>
                             .unzip()
@@ -199,6 +312,10 @@ fn recurse_and_rebuild_attr(
                         quote_spanned! {span=>
                             .collect::<Result<Vec<_>, #err_ty>>()?
                         }
+                    } else if config.option {
+                        quote_spanned! {span=>
+                            .collect::<Option<Vec<_>>>()?
+                        }
                     } else {
                         quote_spanned! {span=>
                             .collect::<Vec<_>>()
@@ -212,6 +329,10 @@ fn recurse_and_rebuild_attr(
         let map_closure = if config.result_err.is_some() {
             quote_spanned! {span=>
                 Ok(#recurse_elem)
+            }
+        } else if config.option {
+            quote_spanned! {span=>
+                Some(#recurse_elem)
             }
         } else {
             quote_spanned! {span=>
@@ -311,7 +432,7 @@ fn recurse_and_rebuild_attr(
                 (attr, #(#unpacked_idents),*)
             }
         };
-        let maybe_question_mark = if config.result_err.is_some() {
+        let maybe_question_mark = if config.result_err.is_some() || config.option {
             quote_spanned! {span=>
                 ?
             }
@@ -350,9 +471,9 @@ fn recurse_and_rebuild_attr(
 ///    `RebuildStackEntry::Deconstruct(_)`
 fn gen_variants_and_arms(
     config: &parse::RebuildConfig,
-    span: Span,
-    enum_ident: &Ident,
-    variant: &Variant,
+    the_enum: &TheEnum,
+    variant_ident: &Ident,
+    variant_fields: &Fields,
 ) -> Result<
     (
         (TokenStream2, Option<TokenStream2>),
@@ -360,11 +481,8 @@ fn gen_variants_and_arms(
     ),
     Error,
 > {
-    let Variant {
-        ident: variant_ident,
-        fields: variant_fields,
-        ..
-    } = variant;
+    let span = the_enum.span;
+    let enum_ident = &the_enum.ident;
     let variant_fields: Vec<_> = match variant_fields {
         Fields::Named(fields_named @ FieldsNamed { named, .. }) => {
             if named.is_empty() {
@@ -399,7 +517,7 @@ fn gen_variants_and_arms(
         .cloned()
         .partition(|(Field { ty: field_ty, .. }, _, has_skip_attr)| {
             // If #[skip_recurse] is set on a child, treat it as an attribute
-            tys::ty_is_boxed_ty(field_ty, enum_ident) && !has_skip_attr
+            tys::is_child_ty(field_ty, enum_ident) && !has_skip_attr
         });
 
     let recurse_attr_field_name_tys = if config.recurse_attrs {
@@ -429,27 +547,50 @@ fn gen_variants_and_arms(
     };
 
     // First, generate the variant for the enum definition for reconstruction
-    let reconstruct_variant_fields = if attr_field_info.is_empty() {
-        quote_spanned! {span=>
-            // No fields (unit variant)
-        }
-    } else {
-        let stripped_attr_fields: Vec<_> = attr_field_info
-            .iter()
-            .map(|(field, _, skip_recurse)| {
-                let field = field.clone();
-                if *skip_recurse {
-                    attrs::strip_our_attrs_from_field(field)
-                } else {
-                    strip_our_attrs_and_rewrite_field_ty(config, false, field)
-                }
-            })
-            .collect();
-        // We need to remove any attributes from these fields first
-        quote_spanned! {span=>
-            { #(#stripped_attr_fields),* }
-        }
-    };
+    let vec_child_field_names: Vec<_> = children_field_info
+        .iter()
+        .filter_map(|(Field { ty: field_ty, .. }, field_name, _)| {
+            if tys::ty_as_vec(field_ty).is_some() {
+                let len_ident = Ident::new(
+                    &format!("{}_len", field_name.to_string()),
+                    field_name.span(),
+                );
+                Some((field_name.clone(), len_ident))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let reconstruct_variant_fields =
+        if attr_field_info.is_empty() && vec_child_field_names.is_empty() {
+            quote_spanned! {span=>
+                // No fields (unit variant)
+            }
+        } else {
+            let reconstruct_fields: Vec<_> = attr_field_info
+                .iter()
+                .map(|(field, _, skip_recurse)| {
+                    let field = field.clone();
+                    // We need to remove any attributes from these fields first
+                    if *skip_recurse {
+                        attrs::strip_our_attrs_and_vis_from_field(field)
+                    } else {
+                        config.strip_our_attrs_and_rewrite_field_ty(false, field)
+                    }
+                })
+                .chain(vec_child_field_names.iter().map(|(_, len_var_name)| Field {
+                    attrs: Vec::new(),
+                    vis: Visibility::Inherited,
+                    mutability: FieldMutability::None,
+                    ident: Some(len_var_name.clone()),
+                    colon_token: Some(Token![:](span)),
+                    ty: tys::ident_into_ty(Ident::new("usize", span)),
+                }))
+                .collect();
+            quote_spanned! {span=>
+                { #(#reconstruct_fields),* }
+            }
+        };
     let reconstruct_variant = quote_spanned! {span=>
         #variant_ident #reconstruct_variant_fields
     };
@@ -468,9 +609,9 @@ fn gen_variants_and_arms(
                 .map(|(field, _, skip_recurse)| {
                     let field = field.clone();
                     if *skip_recurse {
-                        attrs::strip_our_attrs_from_field(field)
+                        attrs::strip_our_attrs_and_vis_from_field(field)
                     } else {
-                        strip_our_attrs_and_rewrite_field_ty(config, true, field)
+                        config.strip_our_attrs_and_rewrite_field_ty(true, field)
                     }
                 })
                 .collect();
@@ -485,16 +626,25 @@ fn gen_variants_and_arms(
     };
 
     // These will be helpful for the next one
-    let attr_field_names_in_braces = if attr_field_info.is_empty() {
-        quote_spanned! {span=>
-            // Unit variant
-        }
-    } else {
-        let attr_field_names: Vec<_> = attr_field_info.iter().map(|(_, name, _)| name).collect();
-        quote_spanned! {span=>
-            { #(#attr_field_names),* }
-        }
-    };
+    let reconstruct_fields_in_braces =
+        if attr_field_info.is_empty() && vec_child_field_names.is_empty() {
+            quote_spanned! {span=>
+                // Unit variant
+            }
+        } else {
+            let reconstruct_field_names: Vec<_> = attr_field_info
+                .iter()
+                .map(|(_, name, _)| name)
+                .chain(
+                    vec_child_field_names
+                        .iter()
+                        .map(|(_, len_var_name)| len_var_name),
+                )
+                .collect();
+            quote_spanned! {span=>
+                { #(#reconstruct_field_names),* }
+            }
+        };
     let all_field_names_in_braces = if variant_field_info.is_empty() {
         quote_spanned! {span=>
             // Unit variant
@@ -505,15 +655,19 @@ fn gen_variants_and_arms(
             { #(#all_field_names),* }
         }
     };
+    let variant_unpack_pat = match the_enum.field_kind {
+        EnumFieldKind::InlineStructs => all_field_names_in_braces.clone(),
+        EnumFieldKind::ExternalStructs => {
+            quote_spanned! {span=>
+                (#variant_ident #all_field_names_in_braces)
+            }
+        }
+    };
 
     // Next, generate the arm of the match that reconstructs this variant
-    let children_field_names: Vec<_> = children_field_info
+    let pop_stmts: Vec<_> = children_field_info
         .iter()
-        .map(|(_, name, _)| name)
-        .collect();
-    let pop_stmts: Vec<_> = children_field_names
-        .iter()
-        .map(|field_name| {
+        .map(|(Field { ty: field_ty, .. }, field_name, _)| {
             let lhs_pat = if config.progress.is_none() {
                 quote_spanned! {span=>
                     #field_name
@@ -525,20 +679,74 @@ fn gen_variants_and_arms(
                     (#field_name, #prog_ident)
                 }
             };
-            let maybe_box_it_up = if config.rewrite_to.is_empty() {
+
+            if tys::ty_as_vec(field_ty).is_some() {
+                let (maybe_init_progress, per_elem_lhs_pat, maybe_join_progress, yield_expr) =
+                    if let Some(progress_ty) = &config.progress {
+                        (
+                            quote_spanned! {span=>
+                                let mut progress = #progress_ty::identity();
+                            },
+                            quote_spanned! {span=>
+                                (elem, elem_progress)
+                            },
+                            quote_spanned! {span=>
+                                progress = progress.join(elem_progress);
+                            },
+                            quote_spanned! {span=>
+                                (elems, progress)
+                            },
+                        )
+                    } else {
+                        (
+                            quote_spanned! {span=>
+                                // No progress variable needed
+                            },
+                            quote_spanned! {span=>
+                                elem
+                            },
+                            quote_spanned! {span=>
+                                // No joining needed because no progress
+                            },
+                            quote_spanned! {span=>
+                                elems
+                            },
+                        )
+                    };
+                let len_var_name = Ident::new(
+                    &format!("{}_len", field_name.to_string()),
+                    field_name.span(),
+                );
                 quote_spanned! {span=>
-                    let #field_name = Box::new(#field_name);
+                    let #lhs_pat = {
+                        let mut elems = Vec::new();
+                        #maybe_init_progress
+                        for _ in 0..#len_var_name {
+                            let #per_elem_lhs_pat = out_stack
+                                .pop()
+                                .expect("Invalid rebuild stack state");
+                            #maybe_join_progress
+                            elems.push(elem);
+                        }
+                        #yield_expr
+                    };
                 }
             } else {
+                let maybe_box_it_up = if config.rewrite_to.is_empty() {
+                    quote_spanned! {span=>
+                        let #field_name = Box::new(#field_name);
+                    }
+                } else {
+                    quote_spanned! {span=>
+                        // Don't create an annoying box
+                    }
+                };
                 quote_spanned! {span=>
-                    // Don't create an annoying box
+                    let #lhs_pat = out_stack
+                        .pop()
+                        .expect("Invalid rebuild stack state");
+                    #maybe_box_it_up
                 }
-            };
-            quote_spanned! {span=>
-                let #lhs_pat = out_stack
-                    .pop()
-                    .expect("Invalid rebuild stack state");
-                #maybe_box_it_up
             }
         })
         .collect();
@@ -562,9 +770,9 @@ fn gen_variants_and_arms(
                 #progress_ty::identity()
             }
         };
-        let join_expr = children_field_names
+        let join_expr = children_field_info
             .iter()
-            .map(|field_name| {
+            .map(|(_, field_name, _)| {
                 let prog_ident_name = field_name.to_string() + "_progress";
                 let prog_ident = Ident::new(&prog_ident_name, span);
                 prog_ident
@@ -640,7 +848,7 @@ fn gen_variants_and_arms(
             , attr_progress
         }
     };
-    let maybe_question_mark = if let Some(_) = &config.result_err {
+    let maybe_question_mark = if config.result_err.is_some() || config.option {
         quote_spanned! {span=>
             ?
         }
@@ -660,7 +868,7 @@ fn gen_variants_and_arms(
             }
         };
         quote_spanned! {span=>
-            #enum_ident::#variant_ident #all_field_names_in_braces #maybe_call_rewrite_method
+            #enum_ident::#variant_ident #variant_unpack_pat #maybe_call_rewrite_method
         }
     } else {
         let rewrite_func_ident = config
@@ -681,7 +889,7 @@ fn gen_variants_and_arms(
         }
     };
     let reconstruct_arm = quote_spanned! {span=>
-        RebuildStackEntry::Reconstruct(Reconstruct::#variant_ident #attr_field_names_in_braces #maybe_progress_pat) => {
+        RebuildStackEntry::Reconstruct(Reconstruct::#variant_ident #reconstruct_fields_in_braces #maybe_progress_pat) => {
                 #(#pop_stmts)*
                 #maybe_init_progress_stmt
                 let #post_rewrite_pat = #reconstruct_and_rewrite;
@@ -739,6 +947,14 @@ fn gen_variants_and_arms(
             }
         })
         .collect();
+    let assign_vec_child_len_vars: Vec<_> = vec_child_field_names
+        .iter()
+        .map(|(vec_child_field_name, len_var_name)| {
+            quote_spanned! {span=>
+                let #len_var_name = #vec_child_field_name.len();
+            }
+        })
+        .collect();
     let maybe_comma_progress = if !config.recurse_attrs || config.progress.is_none() {
         quote_spanned! {span=>
             // Nothing
@@ -750,27 +966,27 @@ fn gen_variants_and_arms(
     };
     let push_stmts: Vec<_> = children_field_info
         .iter()
-        .map(|(_, field_name, has_skip_attr)| {
-            let variant_name = if *has_skip_attr {
+        .map(|(Field { ty: field_ty, .. }, field_name, _)| {
+            if tys::ty_as_vec(field_ty).is_some() {
                 quote_spanned! {span=>
-                    Passthrough
+                    for elem in #field_name {
+                        in_stack.push(RebuildStackEntry::Deconstruct(elem));
+                    }
                 }
             } else {
                 quote_spanned! {span=>
-                    Deconstruct
+                    in_stack.push(RebuildStackEntry::Deconstruct(*#field_name));
                 }
-            };
-            quote_spanned! {span=>
-                in_stack.push(RebuildStackEntry::#variant_name(*#field_name));
             }
         })
         .collect();
     let deconstruct_arm = quote_spanned! {span=>
-        RebuildStackEntry::Deconstruct(#enum_ident::#variant_ident #all_field_names_in_braces) => {
+        RebuildStackEntry::Deconstruct(#enum_ident::#variant_ident #variant_unpack_pat) => {
             #maybe_init_attr_progress
             #(#reassign_recursed_attrs)*
+            #(#assign_vec_child_len_vars)*
             in_stack.push(RebuildStackEntry::Reconstruct(
-                Reconstruct::#variant_ident #attr_field_names_in_braces #maybe_comma_progress));
+                Reconstruct::#variant_ident #reconstruct_fields_in_braces #maybe_comma_progress));
             #(#push_stmts)*
         }
     };
@@ -791,9 +1007,7 @@ fn gen_variants_and_arms(
 ///    `RebuildStackEntry::Deconstruct(_)`)
 fn gen_all_variants_and_arms(
     config: &parse::RebuildConfig,
-    span: Span,
-    enum_ident: &Ident,
-    enum_item: &ItemEnum,
+    the_enum: &TheEnum,
 ) -> Result<
     (
         Vec<TokenStream2>,
@@ -803,10 +1017,12 @@ fn gen_all_variants_and_arms(
     ),
     Error,
 > {
-    let results = enum_item
+    let results = the_enum
         .variants
         .iter()
-        .map(|variant| gen_variants_and_arms(config, span, enum_ident, variant))
+        .map(|(variant_ident, variant_fields)| {
+            gen_variants_and_arms(config, the_enum, variant_ident, variant_fields)
+        })
         .collect::<Result<Vec<_>, Error>>()?;
 
     let (generated_variants, generated_arms): (Vec<_>, Vec<_>) = results.into_iter().unzip();
@@ -832,29 +1048,19 @@ fn gen_all_variants_and_arms(
 /// enum definitions and the `rebuild()` function itself.
 pub fn gen_rebuild_for_config(
     config: parse::RebuildConfig,
-    span: Span,
-    enum_item: &ItemEnum,
+    the_enum: &TheEnum,
 ) -> Result<TokenStream2, Error> {
+    let span = the_enum.span;
+    let enum_ident = &the_enum.ident;
     let namespace_name = &config.name;
-    let enum_ident = &enum_item.ident;
-    let enum_ty = Type::Path(TypePath {
-        qself: None,
-        path: Path {
-            leading_colon: None,
-            segments: std::iter::once(Pair::End(PathSegment {
-                ident: enum_ident.clone(),
-                arguments: PathArguments::None,
-            }))
-            .collect(),
-        },
-    });
+    let enum_ty = tys::ident_into_ty(the_enum.ident.clone());
 
     let (
         reconstruct_variants,
         rewritten_variants,
         generated_reconstruct_arms,
         generated_deconstruct_arms,
-    ) = gen_all_variants_and_arms(&config, span, enum_ident, enum_item)?;
+    ) = gen_all_variants_and_arms(&config, the_enum)?;
 
     let reconstruct_enum = quote_spanned! {span=>
         enum Reconstruct {
@@ -990,6 +1196,15 @@ pub fn gen_rebuild_for_config(
             },
             quote_spanned! {span=>
                 Ok(result)
+            },
+        )
+    } else if config.option {
+        (
+            quote_spanned! {span=>
+                Option<#result_ty>
+            },
+            quote_spanned! {span=>
+                Some(result)
             },
         )
     } else {

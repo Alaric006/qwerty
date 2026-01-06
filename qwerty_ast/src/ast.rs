@@ -172,35 +172,6 @@ impl fmt::Display for Type {
     }
 }
 
-// ----- Shared Expressions (QPU and Classical) -----
-
-/// See [`qpu::Expr::Variable`] or [`classical::Expr::Variable`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct Variable {
-    pub name: String,
-    pub dbg: Option<DebugLoc>,
-}
-
-impl fmt::Display for Variable {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
-
-/// See [`qpu::Expr::BitLiteral`] or [`classical::Expr::BitLiteral`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct BitLiteral {
-    pub val: UBig,
-    pub n_bits: usize,
-    pub dbg: Option<DebugLoc>,
-}
-
-impl fmt::Display for BitLiteral {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "bit[{}](0b{:b})", self.n_bits, self.val)
-    }
-}
-
 // ----- Expressions (QPU) -----
 
 pub mod qpu;
@@ -208,6 +179,41 @@ pub mod qpu;
 // ----- Expressions (Classical) -----
 
 pub mod classical;
+
+// ----- Shared Expressions (QPU and Classical) -----
+
+/// Shared implementation of [`fmt::Display`] for
+/// [`qpu::Variable`]/[`classical::Variable`] and
+/// [`qpu::Expr::BitLiteral`]/[`classical::Expr::BitLiteral`].
+macro_rules! impl_display {
+    (Variable => [$($variable_ty:ty),+]) => {
+        $(
+            impl fmt::Display for $variable_ty {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    let Self { name, .. } = self;
+                    write!(f, "{}", name)
+                }
+            }
+        )+
+    };
+
+    // NB: This implementation is also used for the ToPythonCode
+    //     implementation of qpu::Expr, so this must be a semantically
+    //     equivalent Python expression.
+    (BitLiteral => [$($bit_literal_ty:ty),+]) => {
+        $(
+            impl fmt::Display for $bit_literal_ty {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    let Self { n_bits, val, .. } = self;
+                    write!(f, "bit[{}](0b{:b})", n_bits, val)
+                }
+            }
+        )+
+    };
+}
+
+impl_display!(Variable => [qpu::Variable, classical::Variable]);
+impl_display!(BitLiteral => [qpu::BitLiteral, classical::BitLiteral]);
 
 // ----- Statements (Generic over Expression Type) -----
 
@@ -255,7 +261,7 @@ pub trait Trivializable {
 pub trait Canonicalizable {
     /// Returns a canon form of this expression. This often involves some light
     /// optimizations.
-    fn canonicalize(&self) -> Self;
+    fn canonicalize(self) -> Self;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -291,7 +297,7 @@ where
 {
     /// Returns a canon form of this statement. This involves some light
     /// optimizations. Returns `None` if this statement should be deleted.
-    pub fn canonicalize(&self) -> Option<Self> {
+    pub fn canonicalize(self) -> Option<Self> {
         match self {
             // Remove expression statements containing only a trivial expression.
             Stmt::Expr(StmtExpr { expr, dbg }) => {
@@ -301,39 +307,37 @@ where
                 } else {
                     Some(Stmt::Expr(StmtExpr {
                         expr: canon_expr,
-                        dbg: dbg.clone(),
+                        dbg,
                     }))
                 }
             }
 
             Stmt::Assign(Assign { lhs, rhs, dbg }) => Some(Stmt::Assign(Assign {
-                lhs: lhs.to_string(),
+                lhs,
                 rhs: rhs.canonicalize(),
-                dbg: dbg.clone(),
+                dbg,
             })),
 
             // Unpacking with only one name on the left-hand side is equivalent
             // to assignment.
             Stmt::UnpackAssign(UnpackAssign { lhs, rhs, dbg }) if lhs.len() == 1 => {
+                let lhs = lhs.into_iter().next().expect("lhs is empty");
                 Some(Stmt::Assign(Assign {
-                    lhs: lhs[0].to_string(),
+                    lhs,
                     rhs: rhs.canonicalize(),
-                    dbg: dbg.clone(),
+                    dbg,
                 }))
             }
 
             Stmt::UnpackAssign(UnpackAssign { lhs, rhs, dbg }) => {
                 Some(Stmt::UnpackAssign(UnpackAssign {
-                    lhs: lhs.clone(),
+                    lhs,
                     rhs: rhs.canonicalize(),
-                    dbg: dbg.clone(),
+                    dbg,
                 }))
             }
 
-            Stmt::Return(Return { val, dbg }) => Some(Stmt::Return(Return {
-                val: val.clone(),
-                dbg: dbg.clone(),
-            })),
+            Stmt::Return(Return { val, dbg }) => Some(Stmt::Return(Return { val, dbg })),
         }
     }
 }
@@ -479,7 +483,7 @@ where
 
     /// Returns a canon form of this function. This involves some light
     /// optimizations.
-    pub fn canonicalize(&self) -> Self {
+    pub fn canonicalize(self) -> Self {
         let Self {
             name,
             args,
@@ -488,14 +492,14 @@ where
             is_rev,
             dbg,
         } = self;
-        let canon_body = body.iter().filter_map(Stmt::canonicalize).collect();
+        let body = body.into_iter().filter_map(Stmt::canonicalize).collect();
         Self {
-            name: name.to_string(),
-            args: args.clone(),
-            ret_type: ret_type.clone(),
-            body: canon_body,
-            is_rev: *is_rev,
-            dbg: dbg.clone(),
+            name,
+            args,
+            ret_type,
+            body,
+            is_rev,
+            dbg,
         }
     }
 }
@@ -567,7 +571,7 @@ impl Func {
 
     /// Returns a canon form of this function. This involves some light
     /// optimizations.
-    pub fn canonicalize(&self) -> Self {
+    pub fn canonicalize(self) -> Self {
         match self {
             Func::Qpu(func_def) => Func::Qpu(func_def.canonicalize()),
             Func::Classical(func_def) => Func::Classical(func_def.canonicalize()),
@@ -604,11 +608,11 @@ impl Program {
     /// Returns a [canon][1] form of this program. This involves some light
     /// optimizations.
     /// [1]: https://sunfishcode.github.io/blog/2018/10/22/Canonicalization.html
-    pub fn canonicalize(&self) -> Self {
+    pub fn canonicalize(self) -> Self {
         let Self { funcs, dbg } = self;
         Self {
-            funcs: funcs.iter().map(Func::canonicalize).collect(),
-            dbg: dbg.clone(),
+            funcs: funcs.into_iter().map(Func::canonicalize).collect(),
+            dbg,
         }
     }
 
