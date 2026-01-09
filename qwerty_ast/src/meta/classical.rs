@@ -8,7 +8,7 @@ use crate::{
     meta::{DimExpr, DimVar, Progress, expand::MacroEnv},
 };
 use dashu::integer::UBig;
-use qwerty_ast_macros::{gen_rebuild, rebuild, rewrite_match, rewrite_ty};
+use qwerty_ast_macros::{gen_rebuild, rebuild, rewrite_match, rewrite_ty, visitor_write};
 use std::fmt;
 
 #[gen_rebuild {
@@ -243,56 +243,42 @@ impl MetaExpr {
 // TODO: don't duplicate this code with classical.rs
 impl fmt::Display for MetaExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MetaExpr::Mod {
-                divisor, dividend, ..
-            } => write!(f, "({}) % ({})", divisor, dividend),
+        visitor_write! {MetaExpr, self,
+            MetaExpr::Mod { dividend, divisor, .. } => {
+                write!(f, "({!}) % ({})", *dividend, divisor)
+            }
             MetaExpr::Variable { name, .. } => write!(f, "{}", name),
-            MetaExpr::Slice {
-                val, lower, upper, ..
-            } => {
-                write!(f, "({})[{}:", val, lower)?;
-                if let Some(upper_dimexpr) = upper {
-                    write!(f, "{}", upper_dimexpr)?;
-                }
-                write!(f, "]")
+            MetaExpr::Slice { val, lower, upper: Some(upper_bound), .. } => {
+                write!(f, "({!})[{}:{}]", *val, lower, upper_bound)
+            }
+            MetaExpr::Slice { val, lower, upper: None, .. } => {
+                write!(f, "({!})[{}:]", *val, lower)
             }
             MetaExpr::UnaryOp { kind, val, .. } => {
-                let kind_str = match kind {
+                write!(f, "{}({!})", match kind {
                     UnaryOpKind::Not => "~",
-                };
-                write!(f, "{}({})", kind_str, *val)
+                }, *val)
             }
-            MetaExpr::BinaryOp {
-                kind, left, right, ..
-            } => {
-                let kind_str = match kind {
+            MetaExpr::BinaryOp { kind, left, right, .. } => {
+                write!(f, "({!}) {} ({!})", *left, match kind {
                     BinaryOpKind::And => "&",
                     BinaryOpKind::Or => "|",
                     BinaryOpKind::Xor => "^",
-                };
-                write!(f, "({}) {} ({})", *left, kind_str, *right)
+                }, *right)
             }
             MetaExpr::ReduceOp { kind, val, .. } => {
-                let kind_str = match kind {
+                write!(f, "({!}).{}_reduce()", *val, match kind {
                     BinaryOpKind::And => "and",
                     BinaryOpKind::Or => "or",
                     BinaryOpKind::Xor => "xor",
-                };
-                write!(f, "({}).{}_reduce()", kind_str, *val)
+                })
             }
             MetaExpr::ModMul { x, j, y, mod_n, .. } => {
-                write!(f, "({})**2**({}) * ({}) % ({})", x, j, y, mod_n)
+                write!(f, "({})**2**({}) * ({!}) % ({})", x, j, *y, mod_n)
             }
-            MetaExpr::Repeat { val, amt, .. } => {
-                write!(f, "({}).repeat({})", val, amt)
-            }
-            MetaExpr::Concat { left, right, .. } => {
-                write!(f, "({}).concat({})", left, right)
-            }
-            MetaExpr::BitLiteral { val, n_bits, .. } => {
-                write!(f, "bit[{}](0b{:b})", n_bits, val)
-            }
+            MetaExpr::BitLiteral { val, n_bits, .. } => write!(f, "bit[{}](0b{:b})", n_bits, val),
+            MetaExpr::Repeat { val, amt, .. } => write!(f, "({!}).repeat({})", *val, amt),
+            MetaExpr::Concat { left, right, .. } => write!(f, "({!}).concat({!})", *left, *right),
         }
     }
 }

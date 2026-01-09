@@ -5,7 +5,9 @@ use crate::{
     meta::{MacroEnv, Progress},
 };
 use dashu::{base::Signed, integer::IBig};
-use qwerty_ast_macros::{gen_rebuild, rebuild, rewrite_match, rewrite_ty};
+use qwerty_ast_macros::{
+    gen_rebuild, rebuild, rewrite_match, rewrite_ty, visitor_expr, visitor_write,
+};
 use std::fmt;
 
 /// A dimension variable. The distinction between the two variants exists
@@ -298,17 +300,13 @@ impl DimExpr {
 
     /// Returns `true` if this expression contains at least one dim var.
     pub fn contains_dim_var(&self) -> bool {
-        match self {
+        visitor_expr! {DimExpr, self,
             DimExpr::DimVar { .. } => true,
             DimExpr::DimConst { .. } => false,
-            DimExpr::DimSum { left, right, .. } => {
-                left.contains_dim_var() || right.contains_dim_var()
-            }
-            DimExpr::DimProd { left, right, .. } => {
-                left.contains_dim_var() || right.contains_dim_var()
-            }
-            DimExpr::DimPow { base, pow, .. } => base.contains_dim_var() || pow.contains_dim_var(),
-            DimExpr::DimNeg { val, .. } => val.contains_dim_var(),
+            DimExpr::DimSum { left, right, .. } => visit!(*left) || visit!(*right),
+            DimExpr::DimProd { left, right, .. } => visit!(*left) || visit!(*right),
+            DimExpr::DimPow { base, pow, .. } => visit!(*base) || visit!(*pow),
+            DimExpr::DimNeg { val, .. } => visit!(*val),
         }
     }
 
@@ -363,13 +361,13 @@ impl fmt::Display for DimExpr {
     /// Returns a representation of a dimension variable expression that
     /// matches the syntax in the Python DSL.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        visitor_write! {DimExpr, self,
             DimExpr::DimVar { var, .. } => write!(f, "{}", var),
             DimExpr::DimConst { val, .. } => write!(f, "{}", val),
-            DimExpr::DimSum { left, right, .. } => write!(f, "({})+({})", left, right),
-            DimExpr::DimProd { left, right, .. } => write!(f, "({})*({})", left, right),
-            DimExpr::DimPow { base, pow, .. } => write!(f, "({})**({})", base, pow),
-            DimExpr::DimNeg { val, .. } => write!(f, "-({})", val),
+            DimExpr::DimSum { left, right, .. } => write!(f, "({!})+({!})", *left, *right),
+            DimExpr::DimProd { left, right, .. } => write!(f, "({!})*({!})", *left, *right),
+            DimExpr::DimPow { base, pow, .. } => write!(f, "({!})**({!})", *base, *pow),
+            DimExpr::DimNeg { val, .. } => write!(f, "-({!})", *val),
         }
     }
 }
@@ -453,63 +451,386 @@ impl fmt::Display for MetaType {
     /// Returns a representation of a type that matches the syntax for the
     /// Python DSL.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MetaType::FuncType { in_ty, out_ty } => match (&**in_ty, &**out_ty) {
-                (
-                    MetaType::RegType {
-                        elem_ty: in_elem_ty,
-                        dim: in_dim,
+        visitor_write! {MetaType, self,
+            MetaType::FuncType { in_ty, out_ty }
+                if matches!(
+                    (&**in_ty, &**out_ty),
+                    (
+                        MetaType::RegType {
+                            elem_ty: in_elem_ty @ (RegKind::Qubit | RegKind::Bit),
+                            dim: in_dim
+                        },
+                        MetaType::RegType {
+                            elem_ty: out_elem_ty @ (RegKind::Qubit | RegKind::Bit),
+                            dim: out_dim
+                        },
+                    )
+                    if in_elem_ty == out_elem_ty
+                        && in_dim.clone().strip_dbg() == out_dim.clone().strip_dbg()) =>
+            {
+                write!(
+                    f,
+                    "{}func[{}]",
+                    match &**in_ty {
+                        MetaType::RegType {
+                            elem_ty: RegKind::Qubit,
+                            ..
+                        } => "q",
+                        MetaType::RegType {
+                            elem_ty: RegKind::Bit,
+                            ..
+                        } => "c",
+                        _ => unreachable!(),
                     },
-                    MetaType::RegType {
-                        elem_ty: out_elem_ty,
-                        dim: out_dim,
-                    },
-                ) if *in_elem_ty != RegKind::Basis && *out_elem_ty != RegKind::Basis => {
-                    let prefix = match (in_elem_ty, out_elem_ty) {
-                        (RegKind::Qubit, RegKind::Qubit) => "q",
-                        (RegKind::Qubit, RegKind::Bit) => "qb",
-                        (RegKind::Bit, RegKind::Qubit) => "bq",
-                        (RegKind::Bit, RegKind::Bit) => "b",
-                        (RegKind::Basis, _) | (_, RegKind::Basis) => {
-                            unreachable!("bases cannot be function arguments/results")
-                        }
-                    };
-                    write!(f, "{}func[", prefix)?;
-                    if in_elem_ty == out_elem_ty && in_dim == out_dim {
-                        write!(f, "{}]", in_dim)
-                    } else {
-                        write!(f, "{},{}]", in_dim, out_dim)
+                    match &**in_ty {
+                        MetaType::RegType { dim, .. } => dim,
+                        _ => unreachable!(),
                     }
-                }
-                _ => write!(f, "func[{},{}]", in_ty, out_ty),
-            },
-            MetaType::RevFuncType { in_out_ty } => match &**in_out_ty {
-                MetaType::RegType {
-                    elem_ty: RegKind::Qubit,
-                    dim,
-                } => write!(f, "rev_qfunc[{}]", dim),
-                MetaType::RegType {
-                    elem_ty: RegKind::Bit,
-                    dim,
-                } => write!(f, "rev_bfunc[{}]", dim),
-                _ => write!(f, "rev_func[{}]", in_out_ty),
-            },
-            MetaType::RegType { elem_ty, dim } => match elem_ty {
-                RegKind::Qubit => write!(f, "qubit[{}]", dim),
-                RegKind::Bit => write!(f, "bit[{}]", dim),
-                RegKind::Basis => write!(f, "basis[{}]", dim),
-            },
-            MetaType::TupleType { tys } => {
-                write!(f, "(")?;
-                for (i, ty) in tys.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", ty)?;
-                }
-                write!(f, ")")
+                )
             }
+
+            MetaType::FuncType { in_ty, out_ty }
+                if matches!(
+                    (&**in_ty, &**out_ty),
+                    (
+                        MetaType::RegType {
+                            elem_ty: in_elem_ty @ (RegKind::Qubit | RegKind::Bit),
+                            dim: in_dim
+                        },
+                        MetaType::RegType {
+                            elem_ty: out_elem_ty @ (RegKind::Qubit | RegKind::Bit),
+                            dim: out_dim
+                        },
+                    )
+                    if in_elem_ty == out_elem_ty
+                        && in_dim.clone().strip_dbg() != out_dim.clone().strip_dbg()) =>
+            {
+                write!(
+                    f,
+                    "{}func[{},{}]",
+                    match &**in_ty {
+                        MetaType::RegType {
+                            elem_ty: RegKind::Qubit,
+                            ..
+                        } => "q",
+                        MetaType::RegType {
+                            elem_ty: RegKind::Bit,
+                            ..
+                        } => "c",
+                        _ => unreachable!(),
+                    },
+                    match &**in_ty {
+                        MetaType::RegType { dim, .. } => dim,
+                        _ => unreachable!(),
+                    },
+                    match &**out_ty {
+                        MetaType::RegType { dim, .. } => dim,
+                        _ => unreachable!(),
+                    },
+                )
+            }
+
+            MetaType::FuncType { in_ty, out_ty } => write!(f, "func[{!},{!}]", *in_ty, *out_ty),
+
+            MetaType::RevFuncType { in_out_ty }
+                if matches!(
+                    &**in_out_ty,
+                    MetaType::RegType {
+                        elem_ty: elem_ty @ (RegKind::Qubit | RegKind::Bit),
+                        dim,
+                    }
+                ) =>
+            {
+                write!(
+                    f,
+                    "rev_{}func[{}]",
+                    match &**in_out_ty {
+                        MetaType::RegType {
+                            elem_ty: RegKind::Qubit,
+                            ..
+                        } => "q",
+                        MetaType::RegType {
+                            elem_ty: RegKind::Bit,
+                            ..
+                        } => "c",
+                        _ => unreachable!(),
+                    },
+                    match &**in_out_ty {
+                        MetaType::RegType { dim, .. } => dim,
+                        _ => unreachable!(),
+                    },
+                )
+            }
+
+            MetaType::RevFuncType { in_out_ty } => write!(f, "rev_func[{!}]", *in_out_ty),
+
+            MetaType::RegType { elem_ty: RegKind::Qubit, dim } => write!(f, "qubit[{}]", dim),
+
+            MetaType::RegType { elem_ty: RegKind::Bit, dim } => write!(f, "bit[{}]", dim),
+
+            MetaType::RegType { elem_ty: RegKind::Basis, dim } => write!(f, "basis[{}]", dim),
+
+            MetaType::TupleType { tys } => write!(f, "({!:,})", tys, ", "),
+
             MetaType::UnitType => write!(f, "None"),
         }
+    }
+}
+
+#[cfg(test)]
+mod test_display {
+    use super::{DebugLoc, DimExpr, IBig, MetaType, RegKind};
+
+    #[test]
+    fn test_meta_type_qfunc_same_dim() {
+        let dbg1 = Some(DebugLoc {
+            file: "bubba.py".to_string(),
+            line: 3,
+            col: 4,
+        });
+        let dbg2 = Some(DebugLoc {
+            file: "skippy.py".to_string(),
+            line: 2,
+            col: 5,
+        });
+        let ty = MetaType::FuncType {
+            in_ty: Box::new(MetaType::RegType {
+                elem_ty: RegKind::Qubit,
+                dim: DimExpr::DimConst {
+                    val: IBig::ONE,
+                    dbg: dbg1,
+                },
+            }),
+            out_ty: Box::new(MetaType::RegType {
+                elem_ty: RegKind::Qubit,
+                dim: DimExpr::DimConst {
+                    val: IBig::ONE,
+                    dbg: dbg2,
+                },
+            }),
+        };
+        assert_eq!(ty.to_string(), "qfunc[1]");
+    }
+
+    #[test]
+    fn test_meta_type_qfunc_diff_dim() {
+        let dbg = Some(DebugLoc {
+            file: "bubba.py".to_string(),
+            line: 3,
+            col: 4,
+        });
+        let ty = MetaType::FuncType {
+            in_ty: Box::new(MetaType::RegType {
+                elem_ty: RegKind::Qubit,
+                dim: DimExpr::DimConst {
+                    val: IBig::ONE,
+                    dbg: dbg.clone(),
+                },
+            }),
+            out_ty: Box::new(MetaType::RegType {
+                elem_ty: RegKind::Qubit,
+                dim: DimExpr::DimConst {
+                    val: IBig::ONE + 1,
+                    dbg,
+                },
+            }),
+        };
+        assert_eq!(ty.to_string(), "qfunc[1,2]");
+    }
+
+    #[test]
+    fn test_meta_type_cfunc_same_dim() {
+        let dbg1 = Some(DebugLoc {
+            file: "bubba.py".to_string(),
+            line: 3,
+            col: 4,
+        });
+        let dbg2 = Some(DebugLoc {
+            file: "skippy.py".to_string(),
+            line: 2,
+            col: 5,
+        });
+        let ty = MetaType::FuncType {
+            in_ty: Box::new(MetaType::RegType {
+                elem_ty: RegKind::Bit,
+                dim: DimExpr::DimConst {
+                    val: IBig::ONE,
+                    dbg: dbg1,
+                },
+            }),
+            out_ty: Box::new(MetaType::RegType {
+                elem_ty: RegKind::Bit,
+                dim: DimExpr::DimConst {
+                    val: IBig::ONE,
+                    dbg: dbg2,
+                },
+            }),
+        };
+        assert_eq!(ty.to_string(), "cfunc[1]");
+    }
+
+    #[test]
+    fn test_meta_type_cfunc_diff_dim() {
+        let dbg = Some(DebugLoc {
+            file: "bubba.py".to_string(),
+            line: 3,
+            col: 4,
+        });
+        let ty = MetaType::FuncType {
+            in_ty: Box::new(MetaType::RegType {
+                elem_ty: RegKind::Bit,
+                dim: DimExpr::DimConst {
+                    val: IBig::ONE,
+                    dbg: dbg.clone(),
+                },
+            }),
+            out_ty: Box::new(MetaType::RegType {
+                elem_ty: RegKind::Bit,
+                dim: DimExpr::DimConst {
+                    val: IBig::ONE + 1,
+                    dbg,
+                },
+            }),
+        };
+        assert_eq!(ty.to_string(), "cfunc[1,2]");
+    }
+
+    #[test]
+    fn test_meta_type_func() {
+        let dbg = Some(DebugLoc {
+            file: "bubba.py".to_string(),
+            line: 3,
+            col: 4,
+        });
+        let ty = MetaType::FuncType {
+            in_ty: Box::new(MetaType::RegType {
+                elem_ty: RegKind::Qubit,
+                dim: DimExpr::DimConst {
+                    val: IBig::ONE + 2,
+                    dbg: dbg.clone(),
+                },
+            }),
+            out_ty: Box::new(MetaType::RegType {
+                elem_ty: RegKind::Bit,
+                dim: DimExpr::DimConst {
+                    val: IBig::ONE + 2,
+                    dbg,
+                },
+            }),
+        };
+        assert_eq!(ty.to_string(), "func[qubit[3],bit[3]]");
+    }
+
+    #[test]
+    fn test_meta_type_rev_qfunc() {
+        let dbg = Some(DebugLoc {
+            file: "bubba.py".to_string(),
+            line: 3,
+            col: 4,
+        });
+        let ty = MetaType::RevFuncType {
+            in_out_ty: Box::new(MetaType::RegType {
+                elem_ty: RegKind::Qubit,
+                dim: DimExpr::DimConst {
+                    val: IBig::ONE + 3,
+                    dbg,
+                },
+            }),
+        };
+        assert_eq!(ty.to_string(), "rev_qfunc[4]");
+    }
+
+    #[test]
+    fn test_meta_type_rev_func_unit() {
+        let ty = MetaType::RevFuncType {
+            in_out_ty: Box::new(MetaType::UnitType),
+        };
+        assert_eq!(ty.to_string(), "rev_func[None]");
+    }
+
+    #[test]
+    fn test_meta_type_qubit_reg() {
+        let dbg = Some(DebugLoc {
+            file: "bubba.py".to_string(),
+            line: 3,
+            col: 4,
+        });
+        let ty = MetaType::RegType {
+            elem_ty: RegKind::Qubit,
+            dim: DimExpr::DimConst {
+                val: IBig::ONE + 3,
+                dbg,
+            },
+        };
+        assert_eq!(ty.to_string(), "qubit[4]");
+    }
+
+    #[test]
+    fn test_meta_type_bit_reg() {
+        let dbg = Some(DebugLoc {
+            file: "bubba.py".to_string(),
+            line: 3,
+            col: 4,
+        });
+        let ty = MetaType::RegType {
+            elem_ty: RegKind::Bit,
+            dim: DimExpr::DimConst {
+                val: IBig::ONE + 2,
+                dbg,
+            },
+        };
+        assert_eq!(ty.to_string(), "bit[3]");
+    }
+
+    #[test]
+    fn test_meta_type_basis_reg() {
+        let dbg = Some(DebugLoc {
+            file: "bubba.py".to_string(),
+            line: 3,
+            col: 4,
+        });
+        let ty = MetaType::RegType {
+            elem_ty: RegKind::Basis,
+            dim: DimExpr::DimConst {
+                val: IBig::ONE + 1,
+                dbg,
+            },
+        };
+        assert_eq!(ty.to_string(), "basis[2]");
+    }
+
+    #[test]
+    fn test_meta_type_tuple() {
+        let dbg = Some(DebugLoc {
+            file: "bubba.py".to_string(),
+            line: 3,
+            col: 4,
+        });
+        let ty = MetaType::TupleType {
+            tys: vec![
+                MetaType::RegType {
+                    elem_ty: RegKind::Qubit,
+                    dim: DimExpr::DimConst {
+                        val: IBig::ONE + 3,
+                        dbg: dbg.clone(),
+                    },
+                },
+                MetaType::RegType {
+                    elem_ty: RegKind::Bit,
+                    dim: DimExpr::DimConst {
+                        val: IBig::ONE + 2,
+                        dbg,
+                    },
+                },
+            ],
+        };
+
+        assert_eq!(ty.to_string(), "(qubit[4], bit[3])");
+    }
+
+    #[test]
+    fn test_meta_type_unit() {
+        let ty = MetaType::UnitType;
+        assert_eq!(ty.to_string(), "None");
     }
 }

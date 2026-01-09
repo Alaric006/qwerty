@@ -49,6 +49,10 @@ pub fn path_as_ident<'a>(path: &'a Path) -> Option<&'a Ident> {
     }
 }
 
+pub fn path_is_ident_str<'a>(path: &'a Path, name: &str) -> bool {
+    path_as_ident(path).is_some_and(|ident| ident.to_string() == name)
+}
+
 /// Rewrite `MetaExpr` as `meta_expr`
 pub fn ident_to_snake_case(ident: &Ident) -> Ident {
     let span = ident.span();
@@ -269,4 +273,16 @@ pub fn rewritten_enum_path(ty: Path, config_name: Ident) -> Path {
     ty_as_namespace.segments.push(enum_seg);
 
     ty_as_namespace
+}
+
+/// Converts a string into a variable name path.
+pub fn ident_to_var_name_path(name: Ident) -> Path {
+    Path {
+        leading_colon: None,
+        segments: std::iter::once(PathSegment {
+            ident: name,
+            arguments: PathArguments::None,
+        })
+        .collect(),
+    }
 }
