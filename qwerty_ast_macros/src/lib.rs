@@ -1,12 +1,20 @@
-//! This crate defines the `gen_rebuild` framework used to modify AST data
-//! structures  without tedious handwritten recursive code that blows up the
-//! stack and my wrists. For example, expanding `DimExpr`s even if they are
-//! deep inside a giant tree of `MetaExpr`s and `MetaBasis`es requires
-//! handwritten recursive calls for each of the fields of each of the variants
-//! of these enums.
+//! This crate defines both the `gen_rebuild` and `visitor_*` frameworks used
+//! to modify or traverse AST data structures (respectively) without tedious
+//! handwritten recursive code that blows up the stack and my wrists. For
+//! example, expanding `DimExpr`s even if they are deep inside a giant tree of
+//! `MetaExpr`s and `MetaBasis`es requires handwritten recursive calls for each
+//! of the fields of each of the variants of these enums.
+//!
+//! If you are writing a method on a recursive data type and you want to:
+//! * _Move_ the data type into your method: See [`gen_rebuild`]
+//! * _Borrow_ the data type in your method
+//!   * ...and compute an expression: See [`visitor_expr!`]
+//!   * ...and implement [`std::fmt::Display`]: See [`visitor_write!`]
 use proc_macro::TokenStream;
 
 mod rebuild;
+mod syn_util;
+mod visitor;
 
 fn result_to_token_stream(res: Result<TokenStream, syn::Error>) -> TokenStream {
     res.unwrap_or_else(|err| err.into_compile_error().into())
@@ -510,4 +518,331 @@ pub fn rewrite_ty(args: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn rewrite_match(args: TokenStream) -> TokenStream {
     result_to_token_stream(rebuild::impl_rewrite_match(args))
+}
+
+/// Facilitates implementing [`std::fmt::Display`] for a recursive data
+/// structure.
+///
+/// Unlike [`gen_rebuild`], which takes ownership of a recursive data
+/// structure, visitor macros such as `visitor_write` operate on a reference to
+/// a recursive data structure. `visitor_write` specifically is designed to
+/// implement [`std::fmt::Display`] without blowing out the stack.
+///
+/// `visitor_write` yields a [`std::fmt::Result`] and expects the following
+/// arguments:
+/// 1. The type over which the traversal is performed
+/// 2. An expression to match on (usually `self`)
+/// 3. Exhaustive arms of a match over variants of the data structure using
+///    `if` guards as needed
+///
+/// The body of each arm **must** consist only of a [`write!`] macro call.
+/// Currently, only the following interpolations are supported inside the format
+/// string:
+/// * `{}`, the typical interpolation which expects a corresponding argument as
+///   usual. This is maintained in the generated code. Writing `{0}` or `{foo}`
+///   is not allowed.
+/// * `{!}`, which must correspond to an expression passed to [`write!`] whose
+///    type is exactly argument #1 above.
+/// * `{!:,}`, which must correspond to two arguments to [`write!`]:
+///    1. An expression whose type implements `IntoIterator<Item = &T>` where
+///       `T` is argument #1 above
+///    2. An expression that is written between each node, e.g., `", "`
+///
+/// # Example
+/// ## Before `visitor_write`
+/// For comparison, below is an implementation of [`std::fmt::Display`] for a
+/// simple example AST. This code works for small ASTs but could overflow the
+/// stack with a sufficiently deep expression.
+/// ```
+/// # mod example { // From: https://github.com/rust-lang/rust/issues/130274#issuecomment-2656216123
+/// # use qwerty_ast_macros::visitor_write;
+/// #
+/// enum Expr {
+///     Constant { val: u32 },
+///     Add { lhs: Box<Expr>, rhs: Box<Expr> },
+/// }
+///
+/// impl std::fmt::Display for Expr {
+///     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+///         match self {
+///             Expr::Constant { val } => write!(f, "{}", val),
+///             Expr::Add { lhs, rhs } => write!(f, "{} + {}", *lhs, *rhs),
+///         }
+///     }
+/// }
+/// # pub fn example() {
+/// #     let input = Expr::Add {
+/// #         lhs: Box::new(Expr::Constant { val: 1 }),
+/// #         rhs: Box::new(Expr::Constant { val: 3 }),
+/// #     };
+/// #     let actual = input.to_string();
+/// #     let expected = "1 + 3".to_string();
+/// #     assert_eq!(actual, expected);
+/// # }
+/// # }
+/// # example::example();
+/// ```
+/// ## After `visitor_write`
+/// The following code is semantically equivalent and even looks similar but
+/// does not risk stack overflow (note `{!}` being used for child nodes instead
+/// of `{}`):
+/// ```
+/// # mod example { // From: https://github.com/rust-lang/rust/issues/130274#issuecomment-2656216123
+/// # use qwerty_ast_macros::visitor_write;
+/// #
+/// enum Expr {
+///     Constant { val: u32 },
+///     Add { lhs: Box<Expr>, rhs: Box<Expr> },
+/// }
+///
+/// impl std::fmt::Display for Expr {
+///     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+///         visitor_write! {Expr, self,
+///             Expr::Constant { val } => write!(f, "{}", val),
+///             Expr::Add { lhs, rhs } => write!(f, "{!} + {!}", *lhs, *rhs),
+///         }
+///     }
+/// }
+/// # pub fn example() {
+/// #     let input = Expr::Add {
+/// #         lhs: Box::new(Expr::Constant { val: 1 }),
+/// #         rhs: Box::new(Expr::Constant { val: 3 }),
+/// #     };
+/// #     let actual = input.to_string();
+/// #     let expected = "1 + 3".to_string();
+/// #     assert_eq!(actual, expected);
+/// # }
+/// # }
+/// # example::example();
+/// ```
+///
+/// ## Expanded `visitor_write`
+/// The use of `visitor_write!` above is expanded into something _roughly_
+/// equivalent to the following:
+/// ```
+/// # mod example { // From: https://github.com/rust-lang/rust/issues/130274#issuecomment-2656216123
+/// # use qwerty_ast_macros::visitor_write;
+/// #
+/// enum Expr {
+///     Constant { val: u32 },
+///     Add { lhs: Box<Expr>, rhs: Box<Expr> },
+/// }
+///
+/// enum StackEntry<'a> {
+///     Visit(&'a Expr),
+///     PlainWrite,
+/// }
+///
+/// impl std::fmt::Display for Expr {
+///     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+///         let mut in_stack = vec![StackEntry::Visit(self)];
+///
+///         while let Some(ent) = in_stack.pop() {
+///             match ent {
+///                 StackEntry::Visit(Expr::Constant { val }) => {
+///                     write!(f, "{}", val)?;
+///                 }
+///                 StackEntry::Visit(node @ (Expr::Add { lhs, rhs })) => {
+///                     in_stack.push(StackEntry::Visit(&*rhs));
+///                     in_stack.push(StackEntry::PlainWrite);
+///                     in_stack.push(StackEntry::Visit(&*lhs));
+///                 }
+///                 StackEntry::PlainWrite => {
+///                     write!(f, " + ")?;
+///                 }
+///             }
+///         }
+///         Ok(())
+///     }
+/// }
+/// # pub fn example() {
+/// #     let input = Expr::Add {
+/// #         lhs: Box::new(Expr::Constant { val: 1 }),
+/// #         rhs: Box::new(Expr::Constant { val: 3 }),
+/// #     };
+/// #     let actual = input.to_string();
+/// #     let expected = "1 + 3".to_string();
+/// #     assert_eq!(actual, expected);
+/// # }
+/// # }
+/// # example::example();
+/// ```
+#[proc_macro]
+pub fn visitor_write(args: TokenStream) -> TokenStream {
+    result_to_token_stream(visitor::impl_visitor_write(args))
+}
+
+/// Calculates a expression defined recursively on a data structure without
+/// recursion.
+///
+/// Unlike [`gen_rebuild`], which takes ownership of a recursive data
+/// structure, visitor macros such as `visitor_expr` operate on a reference to
+/// a recursive data structure. `visitor_write` specifically computes an
+/// expression defined recursively without blowing out the stack.
+///
+/// `visitor_write` yields a [`std::fmt::Result`] and expects the following
+/// arguments:
+/// 1. The type over which the traversal is performed
+/// 2. An expression to match on (usually `self`)
+/// 3. Exhaustive arms of a match over variants of the data structure using
+///    `if` guards as needed
+///
+/// The body of each arm is searched for any macro invocations
+/// `visit!(some_expr)` where `some_expr` is an expression whose type is
+/// argument #1 above. All `visit!()`s found are evaluated eagerly and their
+/// results are then substituted into the original expression. In other words,
+/// an arm body such as
+/// ```text
+/// visit!(*left) || visit!(*right)
+/// ```
+/// is expanded to
+/// ```text
+/// let result0 = simulated_recursive_call(&*left);
+/// let result1 = simulated_recursive_call(&*right);
+/// result0 || result1
+/// ```
+/// meaning that short circuiting would not apply here, for instance.
+/// If it helps, you can imagine that each arm body specifies a lambda where
+/// each `visit!()` represents a free variable, as in
+/// ```text
+/// |result0, result1| result0 || result1
+/// ```
+/// and this lambda is invoked with the results of recursion on `&*left` and
+/// `&*right` respectively.
+///
+/// # Example
+/// The following example evaluates an example expression. Note that it is
+/// similar to an example shown in the [`rewrite_match`] documentation except
+/// that [`gen_rebuild`] takes ownership of the `Expr` data structure, but
+/// `visitor_expr` only borrows it. That is, the expression is consumed by the
+/// example code on the [`rewrite_match`] docs, whereas the expression survives
+/// in the code shown here.
+///
+/// ## Before `visitor_expr`
+/// This works for small ASTs, but for deep expressions it can overflow the
+/// stack:
+/// ```
+/// # mod example { // From: https://github.com/rust-lang/rust/issues/130274#issuecomment-2656216123
+/// # use qwerty_ast_macros::visitor_expr;
+/// #
+/// enum Expr {
+///     Constant { val: u32 },
+///     Add { lhs: Box<Expr>, rhs: Box<Expr> },
+/// }
+///
+/// impl Expr {
+///     pub fn calculate(&self) -> u32 {
+///         match self {
+///             Expr::Constant { val } => *val,
+///             Expr::Add { lhs, rhs } => lhs.calculate() + rhs.calculate(),
+///         }
+///     }
+/// }
+/// # pub fn example() {
+/// #     let input = Expr::Add {
+/// #         lhs: Box::new(Expr::Constant { val: 1 }),
+/// #         rhs: Box::new(Expr::Constant { val: 3 }),
+/// #     };
+/// #     let actual = input.calculate();
+/// #     let expected = 4;
+/// #     assert_eq!(actual, expected);
+/// # }
+/// # }
+/// # example::example();
+/// ```
+/// ## After `visitor_expr`
+/// The following alternative code that uses `visitor_expr` is intended to be
+/// syntactically similar without risking stack overflow:
+/// ```
+/// # mod example { // From: https://github.com/rust-lang/rust/issues/130274#issuecomment-2656216123
+/// # use qwerty_ast_macros::visitor_expr;
+/// #
+/// enum Expr {
+///     Constant { val: u32 },
+///     Add { lhs: Box<Expr>, rhs: Box<Expr> },
+/// }
+///
+/// impl Expr {
+///     pub fn calculate(&self) -> u32 {
+///         visitor_expr! {Expr, self,
+///             Expr::Constant { val } => *val,
+///             Expr::Add { lhs, rhs } => visit!(*lhs) + visit!(*rhs),
+///         }
+///     }
+/// }
+/// # pub fn example() {
+/// #     let input = Expr::Add {
+/// #         lhs: Box::new(Expr::Constant { val: 1 }),
+/// #         rhs: Box::new(Expr::Constant { val: 3 }),
+/// #     };
+/// #     let actual = input.calculate();
+/// #     let expected = 4;
+/// #     assert_eq!(actual, expected);
+/// # }
+/// # }
+/// # example::example();
+/// ```
+///
+/// ## Expanded `visitor_expr`
+/// The use of `visitor_expr` above will be expanded to _roughly_ the following:
+/// ```
+/// # mod example { // From: https://github.com/rust-lang/rust/issues/130274#issuecomment-2656216123
+/// # use qwerty_ast_macros::visitor_expr;
+/// #
+/// enum Expr {
+///     Constant { val: u32 },
+///     Add { lhs: Box<Expr>, rhs: Box<Expr> },
+/// }
+/// enum StackEntry<'a> {
+///     Visit(&'a Expr),
+///     ComputeExpr(&'a Expr),
+/// }
+/// impl Expr {
+///     pub fn calculate(&self) -> u32 {
+///         let mut in_stack = vec![StackEntry::Visit(self)];
+///         let mut out_stack = vec![];
+///
+///         while let Some(ent) = in_stack.pop() {
+///             match ent {
+///                 StackEntry::Visit(node @ (Expr::Constant { .. })) => {
+///                     in_stack.push(StackEntry::ComputeExpr(node));
+///                 }
+///                 StackEntry::ComputeExpr(Expr::Constant { val }) => {
+///                     out_stack.push(*val);
+///                 }
+///
+///                 StackEntry::Visit(node @ (Expr::Add { lhs, rhs })) => {
+///                     in_stack.push(StackEntry::ComputeExpr(node));
+///                     in_stack.push(StackEntry::Visit(&*rhs));
+///                     in_stack.push(StackEntry::Visit(&*lhs));
+///                 }
+///                 StackEntry::ComputeExpr(Expr::Add { lhs, rhs }) => {
+///                     let visited_node0 = out_stack
+///                         .pop()
+///                         .expect("Corrupted out_stack");
+///                     let visited_node1 = out_stack
+///                         .pop()
+///                         .expect("Corrupted out_stack");
+///                     out_stack.push(visited_node0 + visited_node1);
+///                 }
+///             }
+///         }
+///         out_stack.pop().expect("out_stack should have length 1")
+///     }
+/// }
+/// # pub fn example() {
+/// #     let input = Expr::Add {
+/// #         lhs: Box::new(Expr::Constant { val: 1 }),
+/// #         rhs: Box::new(Expr::Constant { val: 3 }),
+/// #     };
+/// #     let actual = input.calculate();
+/// #     let expected = 4;
+/// #     assert_eq!(actual, expected);
+/// # }
+/// # }
+/// # example::example();
+/// ```
+#[proc_macro]
+pub fn visitor_expr(args: TokenStream) -> TokenStream {
+    result_to_token_stream(visitor::impl_visitor_expr(args))
 }

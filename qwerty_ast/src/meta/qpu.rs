@@ -5,7 +5,8 @@ use crate::{
     meta::{DimExpr, DimVar, Progress, expand::MacroEnv},
 };
 use dashu::integer::{IBig, UBig};
-use qwerty_ast_macros::{gen_rebuild, rebuild, rewrite_match, rewrite_ty};
+use itertools::Itertools;
+use qwerty_ast_macros::{gen_rebuild, rebuild, rewrite_match, rewrite_ty, visitor_write};
 use std::fmt;
 
 #[gen_rebuild {
@@ -101,13 +102,13 @@ impl fmt::Display for FloatExpr {
     /// Returns a representation of a dimension variable expression that
     /// matches the syntax in the Python DSL.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        visitor_write! {FloatExpr, self,
             FloatExpr::FloatDimExpr { expr, .. } => write!(f, "{}", expr),
             FloatExpr::FloatConst { val, .. } => write!(f, "{}", val),
-            FloatExpr::FloatSum { left, right, .. } => write!(f, "({})+({})", left, right),
-            FloatExpr::FloatProd { left, right, .. } => write!(f, "({})*({})", left, right),
-            FloatExpr::FloatDiv { left, right, .. } => write!(f, "({})/({})", left, right),
-            FloatExpr::FloatNeg { val, .. } => write!(f, "-({})", val),
+            FloatExpr::FloatSum { left, right, .. } => write!(f, "({!})+({!})", *left, *right),
+            FloatExpr::FloatProd { left, right, .. } => write!(f, "({!})*({!})", *left, *right),
+            FloatExpr::FloatDiv { left, right, .. } => write!(f, "({!})/({!})", *left, *right),
+            FloatExpr::FloatNeg { val, .. } => write!(f, "-({!})", *val),
         }
     }
 }
@@ -304,24 +305,20 @@ impl fmt::Display for MetaVector {
     /// Represents a vector in a human-readable form for error messages sent
     /// back to the programmer.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        visitor_write! {MetaVector, self,
             MetaVector::VectorAlias { name, .. } => write!(f, "{}", name),
             MetaVector::VectorSymbol { sym, .. } => write!(f, "'{}'", sym),
-            MetaVector::VectorBroadcastTensor { val, factor, .. } => {
-                write!(f, "({})*({})", *val, factor)
-            }
+            MetaVector::VectorBroadcastTensor { val, factor, .. } => write!(f, "({!})*({})", *val, factor),
             MetaVector::ZeroVector { .. } => write!(f, "'0'"),
             MetaVector::OneVector { .. } => write!(f, "'1'"),
             MetaVector::PadVector { .. } => write!(f, "'?'"),
             MetaVector::TargetVector { .. } => write!(f, "'_'"),
-            MetaVector::VectorTilt { q, angle_deg, .. } => {
-                write!(f, "({})@({})", **q, *angle_deg)
-            }
+            MetaVector::VectorTilt { q, angle_deg, .. } => write!(f, "({!})@({})", *q, angle_deg),
             MetaVector::UniformVectorSuperpos { q1, q2, .. } => {
-                write!(f, "({}) + ({})", **q1, **q2)
+                write!(f, "({!}) + ({!})", *q1, *q2)
             }
             MetaVector::VectorBiTensor { left, right, .. } => {
-                write!(f, "({}) * ({})", **left, **right)
+                write!(f, "({!}) * ({!})", *left, *right)
             }
             MetaVector::VectorUnit { .. } => write!(f, "''"),
         }
@@ -563,30 +560,17 @@ impl MetaBasis {
 
 impl fmt::Display for MetaBasis {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        visitor_write! {MetaBasis, self,
             MetaBasis::BasisAlias { name, .. } => write!(f, "{}", name),
             MetaBasis::BasisAliasRec { name, param, .. } => write!(f, "{}[{}]", name, param),
             MetaBasis::BasisBroadcastTensor { val, factor, .. } => {
-                write!(f, "({})**({})", val, factor)
+                write!(f, "({!})**({})", *val, factor)
             }
-            MetaBasis::BasisLiteral { vecs, .. } => {
-                write!(f, "{{")?;
-                for (i, vec) in vecs.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", vec)?;
-                }
-                Ok(())
-            }
+            MetaBasis::BasisLiteral { vecs, .. } => write!(f, "{{{}}}", vecs.iter().format(", ")),
             MetaBasis::EmptyBasisLiteral { .. } => write!(f, "{{}}"),
-            MetaBasis::BasisBiTensor { left, right, .. } => {
-                write!(f, "({})*({})", *left, *right)
-            }
-            MetaBasis::ApplyBasisGenerator {
-                basis, generator, ..
-            } => {
-                write!(f, "({}) // ({})", *basis, generator)
+            MetaBasis::BasisBiTensor { left, right, .. } => write!(f, "({!})*({!})", *left, *right),
+            MetaBasis::ApplyBasisGenerator { basis, generator, .. } => {
+                write!(f, "({!}) // ({})", *basis, generator)
             }
         }
     }
@@ -1027,73 +1011,63 @@ impl MetaExpr {
 // TODO: don't duplicate with qpu.rs
 impl fmt::Display for MetaExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MetaExpr::ExprMacro { name, arg, .. } => write!(f, "({}).{}", *arg, name),
-            MetaExpr::BasisMacro { name, arg, .. } => write!(f, "({}).{}", *arg, name),
-            MetaExpr::BroadcastTensor { val, factor, .. } => {
-                write!(f, "({})**({})", *val, factor)
-            }
+        visitor_write! {MetaExpr, self,
+            MetaExpr::ExprMacro { name, arg, .. } => write!(f, "({!}).{}", *arg, name),
+            MetaExpr::BasisMacro { name, arg, .. } => write!(f, "({}).{}", arg, name),
+            MetaExpr::BroadcastTensor { val, factor, .. } => write!(f, "({!})**({})", *val, factor),
             MetaExpr::Instantiate { name, param, .. } => write!(f, "{}[[{}]]", name, param),
-            MetaExpr::Repeat {
-                for_each,
-                iter_var,
-                upper_bound,
-                ..
-            } => write!(
-                f,
-                "({} for {} in range({}))",
-                *for_each, iter_var, upper_bound
-            ),
+            MetaExpr::Repeat { for_each, iter_var, upper_bound, .. } => {
+                write!(f, "({!} for {} in range({}))", *for_each, iter_var, upper_bound)
+            }
             MetaExpr::Variable { name, .. } => write!(f, "{}", name),
             MetaExpr::UnitLiteral { .. } => write!(f, "[]"),
-            MetaExpr::EmbedClassical {
-                func, embed_kind, ..
-            } => {
-                let embed_kind_str = match embed_kind {
+            MetaExpr::EmbedClassical { func, embed_kind, .. } => {
+                write!(f, "({!}).{}", *func, match embed_kind {
                     EmbedKind::Sign => "sign",
                     EmbedKind::Xor => "xor",
                     EmbedKind::InPlace => "inplace",
-                };
-                write!(f, "({}).{}", func, embed_kind_str)
+                })
             }
-            MetaExpr::Adjoint { func, .. } => write!(f, "~({})", *func),
-            MetaExpr::Pipe { lhs, rhs, .. } => write!(f, "({}) | ({})", *lhs, *rhs),
+            MetaExpr::Adjoint { func, .. } => write!(f, "~({!})", *func),
+            MetaExpr::Pipe { lhs, rhs, .. } => write!(f, "({!}) | ({!})", *lhs, *rhs),
             MetaExpr::Measure { basis, .. } => write!(f, "({}).measure", basis),
             MetaExpr::Discard { .. } => write!(f, "discard"),
-            MetaExpr::BiTensor { left, right, .. } => write!(f, "({})*({})", *left, *right),
-            MetaExpr::BasisTranslation { bin, bout, .. } => {
-                write!(f, "({}) >> ({})", bin, bout)
+            MetaExpr::BiTensor { left, right, .. } => write!(f, "({!})*({!})", *left, *right),
+            MetaExpr::BasisTranslation { bin, bout, .. } => write!(f, "({}) >> ({})", bin, bout),
+            MetaExpr::Predicated { then_func, else_func, pred, .. } => {
+                write!(f, "({!}) if ({}) else ({!})", *then_func, pred, *else_func)
             }
-            MetaExpr::Predicated {
-                then_func,
-                else_func,
-                pred,
-                ..
-            } => write!(f, "({}) if ({}) else ({})", then_func, pred, else_func),
             MetaExpr::NonUniformSuperpos { pairs, .. } => {
-                for (i, (prob, qlit)) in pairs.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " + ")?;
-                    }
-                    write!(f, "({})*({})", prob, qlit)?;
-                }
-                Ok(())
+                write!(
+                    f,
+                    "{}",
+                    pairs
+                        .iter()
+                        .format_with(
+                            " + ",
+                            |(prob, qlit), f| {
+                                f(&format_args!("({})*({})", prob, qlit))
+                            }
+                        )
+                )
             }
             MetaExpr::Ensemble { pairs, .. } => {
-                for (i, (prob, qlit)) in pairs.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ^ ")?;
-                    }
-                    write!(f, "({})*({})", prob, qlit)?;
-                }
-                Ok(())
+                write!(
+                    f,
+                    "{}",
+                    pairs
+                        .iter()
+                        .format_with(
+                            " ^ ",
+                            |(prob, qlit), f| {
+                                f(&format_args!("({})*({})", prob, qlit))
+                            }
+                        )
+                )
             }
-            MetaExpr::Conditional {
-                then_expr,
-                else_expr,
-                cond,
-                ..
-            } => write!(f, "({}) if ({}) else ({})", then_expr, cond, else_expr),
+            MetaExpr::Conditional { then_expr, else_expr, cond, .. } => {
+                write!(f, "({!}) if ({!}) else ({!})", *then_expr, *cond, *else_expr)
+            }
             MetaExpr::QLit { vec } => write!(f, "{}", vec),
             MetaExpr::BitLiteral { val, n_bits, .. } => write!(f, "bit[{}]({})", val, n_bits),
         }
@@ -1399,5 +1373,100 @@ impl fmt::Display for MetaStmt {
             }
             MetaStmt::Return { val, .. } => write!(f, "return {}", val),
         }
+    }
+}
+
+#[cfg(test)]
+mod test_display {
+    use super::{FloatExpr, MetaVector};
+
+    #[test]
+    fn test_meta_vec_to_string_zero() {
+        let vec = MetaVector::ZeroVector { dbg: None };
+        assert_eq!(vec.to_string(), "'0'");
+    }
+
+    #[test]
+    fn test_meta_vec_to_string_one() {
+        let vec = MetaVector::OneVector { dbg: None };
+        assert_eq!(vec.to_string(), "'1'");
+    }
+
+    #[test]
+    fn test_meta_vec_to_string_pad() {
+        let vec = MetaVector::PadVector { dbg: None };
+        assert_eq!(vec.to_string(), "'?'");
+    }
+
+    #[test]
+    fn test_meta_vec_to_string_tgt() {
+        let vec = MetaVector::TargetVector { dbg: None };
+        assert_eq!(vec.to_string(), "'_'");
+    }
+
+    #[test]
+    fn test_meta_vec_to_string_tilt_180() {
+        let vec = MetaVector::VectorTilt {
+            q: Box::new(MetaVector::OneVector { dbg: None }),
+            angle_deg: FloatExpr::FloatConst {
+                val: 180.0,
+                dbg: None,
+            },
+            dbg: None,
+        };
+        assert_eq!(vec.to_string(), "('1')@(180)");
+    }
+
+    #[test]
+    fn test_meta_vec_to_string_tilt_non_180() {
+        let vec = MetaVector::VectorTilt {
+            q: Box::new(MetaVector::OneVector { dbg: None }),
+            angle_deg: FloatExpr::FloatConst {
+                val: 1.23456,
+                dbg: None,
+            },
+            dbg: None,
+        };
+        assert_eq!(vec.to_string(), "('1')@(1.23456)");
+    }
+
+    #[test]
+    fn test_meta_vec_to_string_superpos() {
+        let vec = MetaVector::UniformVectorSuperpos {
+            q1: Box::new(MetaVector::ZeroVector { dbg: None }),
+            q2: Box::new(MetaVector::OneVector { dbg: None }),
+            dbg: None,
+        };
+        assert_eq!(vec.to_string(), "('0') + ('1')");
+    }
+
+    #[test]
+    fn test_meta_vec_to_string_tensor_01() {
+        let vec = MetaVector::VectorBiTensor {
+            left: Box::new(MetaVector::ZeroVector { dbg: None }),
+            right: Box::new(MetaVector::OneVector { dbg: None }),
+            dbg: None,
+        };
+        assert_eq!(vec.to_string(), "('0') * ('1')");
+    }
+
+    #[test]
+    fn test_meta_vec_to_string_tensor_01pad() {
+        let vec = MetaVector::VectorBiTensor {
+            left: Box::new(MetaVector::ZeroVector { dbg: None }),
+            right: Box::new(MetaVector::VectorBiTensor {
+                left: Box::new(MetaVector::OneVector { dbg: None }),
+                right: Box::new(MetaVector::PadVector { dbg: None }),
+                dbg: None,
+            }),
+            dbg: None,
+        };
+        assert_eq!(vec.to_string(), "('0') * (('1') * ('?'))");
+    }
+
+    #[test]
+    fn test_meta_vec_to_string_vector_unit() {
+        let vec = MetaVector::VectorUnit { dbg: None };
+        assert_eq!(vec.to_string(), "''");
     }
 }
