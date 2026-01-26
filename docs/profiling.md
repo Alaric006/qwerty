@@ -1,18 +1,18 @@
 # Overview
 
-Profiling a qwerty program can be an involved task. Qwerty programs are started in Python, which calls JIT'd Rust code, descending through C++ and MLIR! There are no doubt other ways of approaching profiling, however, the approach described below we found to be the most versatile, providing good details throughout the language layers.
+Profiling a qwerty program can be an involved task. Qwerty programs are started in Python, which calls JIT'd Rust code, descending through C++ and MLIR. There are no doubt other ways of approaching profiling, however, the approach described below we found to be the most versatile, providing good details throughout the language layers.
 
 
 # Approach
 
-We use py-spy, a python profiling program that drills well into C++ and Rust stacks. py-spy works by observing -- but not injecting itself into -- the program that it profiles. As most test programs run quickly, and py-spy seems to have problems sampling at more than 25-50 Hz, we run a sample program many times. The result is not a profile of a single program, but the average of many runs. These results are great for providing an overview. That being said, if the goal is to profile a particular segment which occupies a small portion of total runtime, py-spy may not be the right choice.
+This approach uses  py-spy, a python profiling program that drills well into C++ and Rust stacks. py-spy works by observing -- but not injecting itself into -- the program that it profiles. As most test programs finish quickly, and py-spy seems to have problems sampling at more than 25-50 Hz, it is necessary to run a sample program over many iterations. The result is not a profile of a single run, but the average of many. These results are great for providing an overview. That being said, if the goal is to obtain a high accuracy profile of particular segment occupying a small portion of total runtime, py-spy may not be the ideal choice.
 
 # How to
 
 
 ## Install py-spy
 
-Firstly, install py-spy using pip inside the qwerty venv:
+Install py-spy using pip, making sure you are inside the qwerty venv:
 
 ```
 pip install py-spy
@@ -20,12 +20,13 @@ pip install py-spy
 
 ## Create Test Script
 
-Next, you will create a test python script to run your desired qwerty program multiple times:
+Create a test python script:
 
- - Place the program you would like to sample in a for loop. The number of iterations of the for loop depends on the desired granuality. For a rough overview, 50 iterations is sufficient. 500 or 5000 iterations is more suitable for detailed reports. Longer running programs may need lower numbers of iterations.
- -Place ``_reset_compiler_state()`` at the top of for loop body.
+ - Place the program you would like to sample in a for loop.
+ - The number of iterations of the for loop depends on the desired granuality. For a rough overview, 50 iterations is sufficient. 500 or 5000 iterations is more suitable for detailed reports. Longer running programs may need lower numbers of iterations.
+ - Place ``_reset_compiler_state()`` at the top of the loop body.
 
-As an example, here is what a test script for [examples/bv.py](../examples/bv.py) might look like:
+As an example, here is what a test script for [examples/bv.py](../examples/bv.py) might look like. Note that only the code in the body of ``if __name__ == 'main':`` has been changed:
 
 **bv-sampler.py**
 ```
@@ -63,10 +64,11 @@ def naive_classical(f, n_bits):
         x = x >> 1
     return secret_found
 
+# DIFFERENCE
 if __name__ == '__main__':
 	# Run 5000 samples of bv
     for i in range(0, 5000):
-	    # Clear compiler state for each new iteration
+	    # IMPORTANT
         _reset_compiler_state()
         secret_str = bit.from_str("1000")
         n_bits = len(secret_str)
@@ -76,21 +78,20 @@ if __name__ == '__main__':
         print('Quantum:  ', bv(black_box, acc=None))
 ```
 
-``_reset_compiler_state()`` is needed due to an oversight with the current compiler. If this line is not placed, the compiler will crawl to a halt under the wait of no longer needed internal resources. This is an issue that we will address in the future.
+``_reset_compiler_state()`` is needed due to an oversight with the current compiler. If this line is not placed, the compiler will crawl to a halt under the weight of unfreed internal resources. This is an issue that we plan to address in the future.
 
 ## Run Script
+To begin sampling, run:
 
 ``py-spy record -o py-spy-results.prof --native --format speedscope -- python <my-sampler.py>``
 
---native is essential so that py-spy accurately profiles C++ and Rust portions of qwerty.
+``--native`` is essential so that py-spy accurately profiles C++ and Rust portions of the qwerty compiler.
 
 
 ## Visualizing with speedscope
 
-Visit https://www.speedscope.app/ and upload the .prof file created in the previous step.
+Visit [https://www.speedscope.app/](https://www.speedscope.app/) and upload the .prof file created in the previous step.
 
-Once the profile is uploaded, select "left heavy" in the top-left corner. The default organization will show every run one after the other. Selecting "leave heavy" consolidates function calls together. It is very important to select this mode as we are using a statistical, not deterministic, profiling approach.
+Once the profile is uploaded, select "left heavy" in the top-left corner. The default organization will show every run one after the other. Selecting "leave heavy" consolidates function calls together. It is very important to select this mode as we are using a statistical approach.
 
-If you face issues with speedscope, try running the program in Google Chrome.
-
-
+If you face issues with using https://www.speedscope.app/, try running the program in Google Chrome.
